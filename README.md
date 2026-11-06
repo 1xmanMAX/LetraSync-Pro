@@ -2,6 +2,17 @@
 
 La letra de una canción, sincronizada con su audio, en el teléfono y sin conexión.
 
+**Tres pasos, siempre a la vista** (rediseño 0.4.0, pensado para el dedo: todo lo que se toca mide 48 dp o más):
+
+1. **Letra**: Pegar · Buscar (LRCLib) · Archivo (LRC, SRT, texto).
+2. **Sincronizar**: «Toca al ritmo» (por líneas o por palabras) con un botón enorme donde cae el pulgar, que vibra
+   y marca al bajar el dedo; o «Automática».
+3. **Afinar**: la onda con las líneas encima (se cogen por su asa) y, al tocar una línea, su tiempo grande con
+   − 0.1 s / + 0.1 s (mantener repite), «Aquí» (pone el tiempo de ahora y pasa a la siguiente), «Oír» y «Bucle».
+   **Mover una línea nunca mueve otra** ni la deja cruzarse con sus vecinas.
+
+Lo poco frecuente va en «Más».
+
 - **Sincronizar sola**: el reconocedor de voz oye la canción y la letra pegada se alinea con lo oído (tres
   tamaños de reconocedor en Ajustes: rápido, equilibrado, preciso).
 - **A toques**: un toque al empezar cada línea, con la canción sonando a 0.5×, 0.75× o 1× (los tiempos son

@@ -75,7 +75,7 @@ private const val VENTANA_MS = 10_000
 @Composable
 fun VistaDeOnda(
     onda: FloatArray?, lineas: List<LetraDeCancion.Linea>, posicion: Int, duracion: Int, elegida: Int?,
-    iman: Boolean, inicios: List<Int>,
+    iman: Boolean, inicios: List<Int>, limites: (Int) -> IntRange,
     alIr: (Int) -> Unit, alMover: (Int, Int) -> Unit, alElegir: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -83,7 +83,9 @@ fun VistaDeOnda(
     val tenue = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
     val fondo = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     val densidad = LocalDensity.current
-    val umbralPx = with(densidad) { 18.dp.toPx() }
+    val umbralPx = with(densidad) { 28.dp.toPx() }
+    val asaPx = with(densidad) { 22.dp.toPx() }
+    val lim by rememberUpdatedState(limites)
     // Mientras se arrastra una marca, la ventana se queda quieta y la marca va donde el dedo.
     var arrastrada by remember { mutableIntStateOf(-1) }
     var msArrastre by remember { mutableIntStateOf(0) }
@@ -95,14 +97,15 @@ fun VistaDeOnda(
     val ini by rememberUpdatedState(inicios)
     var anchoPx by remember { mutableIntStateOf(1) }
 
-    fun centro() = centroFijo ?: pos
+    // Al principio de la canción no se enseña «antes de 0:00»: la ventana empieza en 0 y la raya de lo que suena va a la izquierda.
+    fun centro() = (centroFijo ?: pos).coerceAtLeast(VENTANA_MS / 2)
     fun msEn(x: Float): Int = (centro() - VENTANA_MS / 2 + x / anchoPx * VENTANA_MS).toInt()
     fun xDe(ms: Int): Float = ((ms - (centro() - VENTANA_MS / 2)).toFloat() / VENTANA_MS) * anchoPx
     fun marcaCerca(x: Float): Int? =
         ls.indices.filter { ls[it].ms != null }.minByOrNull { abs(xDe(ls[it].ms!!) - x) }?.takeIf { abs(xDe(ls[it].ms!!) - x) <= umbralPx }
 
     Canvas(
-        modifier.fillMaxWidth().height(76.dp).background(fondo).onSizeChanged { anchoPx = it.width.coerceAtLeast(1) }
+        modifier.fillMaxWidth().height(112.dp).background(fondo).onSizeChanged { anchoPx = it.width.coerceAtLeast(1) }
             .pointerInput(Unit) {
                 detectTapGestures { o -> marcaCerca(o.x)?.let(alElegir) ?: alIr(msEn(o.x).coerceIn(0, dur)) }
             }
@@ -113,13 +116,16 @@ fun VistaDeOnda(
                     onDragStart = { o ->
                         dx = 0f
                         val m = marcaCerca(o.x)
-                        if (m != null) { arrastrada = m; msArrastre = ls[m].ms!!; centroFijo = pos; desde = msArrastre }
+                        // Solo se coge una línea por su asa (arriba) o muy cerca de su raya: así arrastrar la onda
+                        // para moverse por la canción no se lleva una línea sin querer.
+                        val porArriba = o.y <= asaPx * 1.6f
+                        if (m != null && (porArriba || abs(xDe(ls[m].ms!!) - o.x) <= umbralPx / 2)) { arrastrada = m; msArrastre = ls[m].ms!!; centroFijo = pos; desde = msArrastre; alElegir(m) }
                         else { arrastrada = -1; desde = pos }
                     },
                     onDragEnd = {
                         if (arrastrada >= 0) {
-                            val fin = if (imanAhora) Onda.pegar(msArrastre, ini) else msArrastre
-                            alMover(arrastrada, fin.coerceAtLeast(0))
+                            val fin = (if (imanAhora) Onda.pegar(msArrastre, ini) else msArrastre).coerceIn(lim(arrastrada))
+                            alMover(arrastrada, fin)
                         }
                         arrastrada = -1; centroFijo = null
                     },
@@ -128,7 +134,7 @@ fun VistaDeOnda(
                         cambio.consume()
                         dx += d.x
                         val msPorPx = VENTANA_MS.toFloat() / anchoPx
-                        if (arrastrada >= 0) msArrastre = (desde + dx * msPorPx).toInt().coerceAtLeast(0)
+                        if (arrastrada >= 0) msArrastre = (desde + dx * msPorPx).toInt().coerceIn(lim(arrastrada))
                         else alIr((desde - dx * msPorPx).toInt().coerceIn(0, dur))
                     }
                 )
@@ -158,15 +164,19 @@ fun VistaDeOnda(
             val ms = if (i == arrastrada) msArrastre else l.ms ?: return@forEachIndexed
             val x = xDe(ms)
             if (x < -4 || x > w + 4) return@forEachIndexed
-            val c = if (i == elegida || i == arrastrada) Color(0xFFFF9500) else LetraSyncActivity.MORADO
-            drawLine(c, Offset(x, 0f), Offset(x, h), strokeWidth = if (i == arrastrada) 4f else 2.5f)
-            drawCircle(c, radius = 9f, center = Offset(x, 10f))
+            val c = if (i == elegida || i == arrastrada) Tema.CORAL else primario
+            drawLine(c, Offset(x, asaPx * 0.9f), Offset(x, h), strokeWidth = if (i == arrastrada) 5f else 3f)
+            // El asa: una pastilla arriba, de donde se coge.
+            drawRoundRect(
+                c, topLeft = Offset(x - asaPx * 0.55f, 2f), size = androidx.compose.ui.geometry.Size(asaPx * 1.1f, asaPx * 0.9f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(asaPx * 0.45f)
+            )
             // Las palabras de la línea, como rayitas.
             l.palabras?.forEachIndexed { k, p -> if (k > 0 && p != null) { val px = xDe(p + (ms - (l.ms ?: ms))); drawLine(c.copy(alpha = 0.6f), Offset(px, h - 14f), Offset(px, h), strokeWidth = 2f) } }
         }
         // Lo que suena.
         val xp = xDe(pos)
-        drawLine(Color(0xFFE53935), Offset(xp, 0f), Offset(xp, h), strokeWidth = 2f)
+        drawLine(Color.White.copy(alpha = 0.9f), Offset(xp, 0f), Offset(xp, h), strokeWidth = 3f)
     }
 }
 
@@ -186,44 +196,6 @@ fun conPalabras(l: LetraDeCancion.Linea, ms: Int, resaltado: Color, cantado: Col
     }
 }
 
-/** A toques por palabras: la línea con la palabra que toca marcada; un toque en cualquier sitio la marca. */
-@Composable
-fun PantallaPorPalabras(s: SincronizadorPorPalabras, letra: LetraDeCancion.Letra, cambio: Int, alMarcar: () -> Unit, alAtras: () -> Unit, alTerminar: () -> Unit) {
-    @Suppress("UNUSED_EXPRESSION") cambio
-    val (li, pi) = s.actual ?: (letra.lineas.lastIndex to -1)
-    val primario = MaterialTheme.colorScheme.primary
-    Column(
-        Modifier.fillMaxSize().clickable(onClick = alMarcar).padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
-    ) {
-        Text("Toca cuando empiece cada palabra", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(20.dp))
-        val linea = letra.lineas.getOrNull(li)
-        if (linea != null) Text(
-            buildAnnotatedString {
-                linea.trozos.forEachIndexed { k, w ->
-                    if (k > 0) append(' ')
-                    when {
-                        k == pi -> withStyle(SpanStyle(color = Color.White, background = primario, fontWeight = FontWeight.Bold)) { append(" $w ") }
-                        k < pi || pi < 0 -> withStyle(SpanStyle(color = primario)) { append(w) }
-                        else -> append(w)
-                    }
-                }
-            },
-            fontSize = 26.sp, textAlign = TextAlign.Center, lineHeight = 36.sp
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(letra.lineas.getOrNull(li + 1)?.texto.orEmpty(), fontSize = 17.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(24.dp))
-        LinearProgressIndicator(progress = { if (s.orden.isEmpty()) 0f else s.siguiente.toFloat() / s.orden.size }, modifier = Modifier.width(200.dp))
-        Text("${s.siguiente} de ${s.orden.size} palabras", fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
-            TextButton(onClick = alAtras) { Icon(Icons.AutoMirrored.Filled.Undo, null); Text(" Atrás") }
-            TextButton(onClick = alTerminar) { Text("Terminar") }
-        }
-    }
-}
-
 /** **Vista previa** (como la de Voxen o Composer): la letra como la verá quien cante, a pantalla completa. */
 @Composable
 fun VistaPrevia(letra: LetraDeCancion.Letra, posicion: Int, alCerrar: () -> Unit) {
@@ -234,7 +206,7 @@ fun VistaPrevia(letra: LetraDeCancion.Letra, posicion: Int, alCerrar: () -> Unit
             Spacer(Modifier.height(18.dp))
             val l = letra.lineas.getOrNull(i)
             Text(
-                if (l == null) AnnotatedString("♪") else conPalabras(l, posicion, LetraSyncActivity.MORADO_CLARO, Color.White.copy(alpha = 0.85f)),
+                if (l == null) AnnotatedString("♪") else conPalabras(l, posicion, Tema.VIOLETA, Color.White.copy(alpha = 0.85f)),
                 color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, lineHeight = 40.sp
             )
             Spacer(Modifier.height(18.dp))

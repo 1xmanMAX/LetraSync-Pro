@@ -117,6 +117,7 @@ object LetraDeCancion {
         // Cada entrada lleva su orden de llegada para que ordenar por tiempo no baraje las iguales.
         val salida = ArrayList<Linea>()
         var anteriorEnBlanco = true
+        var variasMarcas = false
         for (cruda in lineas) {
             val linea = cruda.trim()
             if (linea.isEmpty()) { anteriorEnBlanco = true; continue }
@@ -144,6 +145,7 @@ object LetraDeCancion {
                 } else salida.add(Linea(null, letra))
             } else {
                 // `offset` positivo adelanta la letra (LRC): la línea sale antes.
+                if (marcas.size > 1) variasMarcas = true
                 marcas.forEachIndexed { k, it ->
                     val ms = (it - desfase).coerceAtLeast(0)
                     // Un estribillo con dos marcas: las palabras se corren con su línea.
@@ -153,7 +155,10 @@ object LetraDeCancion {
             }
             anteriorEnBlanco = false
         }
-        return Letra(ordenar(salida), titulo, artista, album, autor)
+        // Solo se ordena por tiempo un LRC con estribillos de varias marcas (`[00:10][01:20]…`), que hay que
+        // desplegar. Lo demás se queda en el orden escrito: al retocar una línea, no salta de sitio ni se lleva
+        // a la vecina (6-nov-2026, «si muevo una línea la siguiente también se mueve»).
+        return Letra(if (variasMarcas) ordenar(salida) else salida, titulo, artista, album, autor)
     }
 
     /**

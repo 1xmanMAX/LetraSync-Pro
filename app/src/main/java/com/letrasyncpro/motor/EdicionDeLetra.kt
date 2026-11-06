@@ -20,9 +20,36 @@ object EdicionDeLetra {
         return l.copy(ms = (ms + d).coerceAtLeast(0), palabras = l.palabras?.map { w -> w?.let { (it + d).coerceAtLeast(0) } })
     }
 
-    /** Mueve la línea [i] [deltaMs] (negativo: antes), con sus palabras. Sin tiempo, no hace nada. Nunca por debajo de 0. */
-    fun ajustar(letra: Letra, i: Int, deltaMs: Int): Letra =
-        letra.copy(lineas = letra.lineas.mapIndexed { k, l -> if (k == i) correr(l, deltaMs) else l })
+    /** Lo menos que separa una línea de su vecina al moverla: así nunca se cruzan. */
+    const val HUECO_MINIMO = 100
+
+    /**
+     * Hasta dónde puede ir la línea [i] sin cruzarse con sus vecinas con tiempo: entre la anterior y la
+     * siguiente, con [HUECO_MINIMO] de margen. Sin vecina, de 0 a lo que sea.
+     */
+    fun limites(letra: Letra, i: Int): IntRange {
+        val antes = (i - 1 downTo 0).firstNotNullOfOrNull { letra.lineas[it].ms }?.let { it + HUECO_MINIMO } ?: 0
+        val despues = (i + 1 until letra.lineas.size).firstNotNullOfOrNull { letra.lineas[it].ms }?.let { it - HUECO_MINIMO } ?: Int.MAX_VALUE
+        return if (despues < antes) antes..antes else antes..despues
+    }
+
+    /**
+     * Mueve **solo** la línea [i] [deltaMs] (negativo: antes), con sus palabras, **sin pasar de sus vecinas**:
+     * las demás no se tocan nunca. Sin tiempo, no hace nada.
+     */
+    fun ajustar(letra: Letra, i: Int, deltaMs: Int): Letra {
+        val l = letra.lineas.getOrNull(i) ?: return letra
+        val ms = l.ms ?: return letra
+        val nuevo = (ms + deltaMs).coerceIn(limites(letra, i))
+        return letra.copy(lineas = letra.lineas.mapIndexed { k, x -> if (k == i) correr(x, nuevo - ms) else x })
+    }
+
+    /** Lleva la línea [i] a [ms] sin pasar de sus vecinas (arrastrarla en la onda). */
+    fun llevar(letra: Letra, i: Int, ms: Int): Letra {
+        val l = letra.lineas.getOrNull(i) ?: return letra
+        val destino = ms.coerceIn(limites(letra, i))
+        return if (l.ms == null) poner(letra, i, destino) else ajustar(letra, i, destino - l.ms)
+    }
 
     /** **Mueve la línea [i] y todas las de detrás** (lo que hace la edición por lotes de LRC Editor). */
     fun ajustarDesde(letra: Letra, i: Int, deltaMs: Int): Letra =

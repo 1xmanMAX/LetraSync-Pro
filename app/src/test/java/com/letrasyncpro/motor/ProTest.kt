@@ -40,6 +40,19 @@ class ProTest {
     }
 
     @Test
+    fun mover_una_linea_nunca_mueve_otra_ni_la_cruza() {
+        val l = Letra(listOf(Linea(1_000, "a"), Linea(2_000, "b"), Linea(3_000, "c")))
+        // Pasarse de la siguiente: se queda justo antes de ella; las otras, igual.
+        assertEquals(listOf(1_000, 2_900, 3_000), EdicionDeLetra.ajustar(l, 1, 5_000).lineas.map { it.ms })
+        assertEquals(listOf(1_000, 1_100, 3_000), EdicionDeLetra.llevar(l, 1, 0).lineas.map { it.ms })
+        assertEquals(1_100..2_900, EdicionDeLetra.limites(l, 1))
+        // Poner «aquí» más allá de la siguiente no la reordena: se queda en su sitio (y se ve en rojo).
+        val r = LetraDeCancion.leer(EdicionDeLetra.texto(EdicionDeLetra.poner(l, 0, 2_500)))
+        assertEquals(listOf("a", "b", "c"), r.lineas.map { it.texto })
+        assertEquals(setOf(1), EdicionDeLetra.desordenadas(r))
+    }
+
+    @Test
     fun la_palabra_que_suena() {
         val l = Linea(1_000, "a b c", listOf(null, 1_500, 2_000))
         assertEquals(-1, EdicionDeLetra.palabraActual(l, 900))
