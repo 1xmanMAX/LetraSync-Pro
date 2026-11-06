@@ -16,6 +16,13 @@ segmentado:
 3. **Revisar**: la onda con las líneas y, al tocar una, su tiempo grande con −0,1 / +0,1 (mantener repite), «Aquí»,
    «Oír» y «Bucle». **Mover una línea nunca mueve otra** ni la deja cruzarse con sus vecinas.
 
+**Más despacio y más de cerca** (0.6.0): en «En la onda», velocidad ½× · ¾× · 1× (sin cambiar el tono) y la onda se
+estira con dos dedos o con las lupas hasta 1 s a la vista, con un punto cada 5 ms.
+
+**Separar voz y música** (0.6.0, Más → «Separar voz y música»): solo voz y karaoke, en el teléfono, con el modelo
+UVR-MDX-NET-Voc_FT (el de Ultimate Vocal Remover). Al separar, el reproductor deja elegir Canción · Solo voz ·
+Karaoke y la onda pasa a ser la de la voz. Detalles y comprobación: [docs/separar-voz.md](docs/separar-voz.md).
+
 Lo poco frecuente va en «Más».
 
 - **Sincronizar sola**: el reconocedor de voz oye la canción y la letra pegada se alinea con lo oído (tres

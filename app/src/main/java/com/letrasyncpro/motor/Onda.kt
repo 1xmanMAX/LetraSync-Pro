@@ -11,7 +11,10 @@ import kotlin.math.sqrt
  * [Transcriptor.HERCIOS]).
  */
 object Onda {
-    const val MS_POR_PUNTO = 20
+    /** Un punto cada 5 ms: al estirar la onda se ve dónde arranca cada sílaba. */
+    const val MS_POR_PUNTO = 5
+    /** Los arranques se buscan con puntos de 20 ms (más finos, cualquier golpe parecería uno). */
+    private const val MS_ARRANQUES = 20
 
     /** La envolvente de un PCM de 16 bits little-endian, mono. */
     fun envolvente(pcm: InputStream, hercios: Int = Transcriptor.HERCIOS): FloatArray {
@@ -52,20 +55,33 @@ object Onda {
      * **Dónde arranca un sonido**: un punto que sube claramente sobre lo que sonaba justo antes (la media de
      * los 200 ms previos), con un hueco mínimo de 150 ms entre uno y otro. En ms.
      */
-    fun inicios(e: FloatArray, subida: Float = 0.18f, factor: Float = 1.8f): List<Int> {
+    fun inicios(fina: FloatArray, subida: Float = 0.18f, factor: Float = 1.8f): List<Int> {
+        val e = reducir(fina, MS_ARRANQUES / MS_POR_PUNTO)
         val r = ArrayList<Int>()
-        val ventana = 200 / MS_POR_PUNTO
+        val ventana = 200 / MS_ARRANQUES
         var ultimo = -10_000
         for (i in ventana until e.size) {
             var s = 0f
             for (k in i - ventana until i) s += e[k]
             val antes = s / ventana
             if (e[i] - antes >= subida && e[i] >= antes * factor && e[i] > e[i - 1]) {
-                val ms = i * MS_POR_PUNTO
+                // Dentro del punto de 20 ms, el primer punto fino que ya sube: el arranque, al ms.
+                val ms = primeraSubida(fina, i * MS_ARRANQUES / MS_POR_PUNTO, MS_ARRANQUES / MS_POR_PUNTO, antes) * MS_POR_PUNTO
                 if (ms - ultimo >= 150) { r += ms; ultimo = ms }
             }
         }
         return r
+    }
+
+    /** Una envolvente más gruesa: el máximo de cada [n] puntos. */
+    fun reducir(e: FloatArray, n: Int): FloatArray =
+        if (n <= 1) e else FloatArray((e.size + n - 1) / n) { k -> var m = 0f; for (j in k * n until minOf(e.size, k * n + n)) if (e[j] > m) m = e[j]; m }
+
+    /** El primer punto fino desde [desde] (de [cuantos]) que pasa de lo que sonaba [antes]: donde arranca. */
+    private fun primeraSubida(fina: FloatArray, desde: Int, cuantos: Int, antes: Float): Int {
+        val umbral = antes + (0.5f * (fina.getOrElse(desde + cuantos - 1) { antes } - antes)).coerceAtLeast(0.02f)
+        for (k in desde until minOf(fina.size, desde + cuantos)) if (fina[k] >= umbral) return k
+        return desde
     }
 
     /** El inicio más cercano a [ms] a menos de [margenMs]; si no hay, [ms] tal cual. */

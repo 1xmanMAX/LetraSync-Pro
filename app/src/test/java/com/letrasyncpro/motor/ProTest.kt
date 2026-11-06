@@ -102,8 +102,8 @@ class ProTest {
     @Test
     fun la_onda_y_donde_arranca_la_voz() {
         val e = Onda.envolvente(pcm(1_000 to 50.toShort(), 1_000 to 8_000.toShort(), 500 to 50.toShort(), 500 to 8_000.toShort()))
-        assertEquals(150, e.size)
-        assertTrue(e[10] < 0.05f); assertTrue(e[60] > 0.9f)
+        assertEquals(600, e.size) // un punto cada 5 ms
+        assertTrue(e[40] < 0.05f); assertTrue(e[240] > 0.9f)
         val ini = Onda.inicios(e)
         assertEquals(listOf(1_000, 2_500), ini)
         assertEquals(1_000, Onda.pegar(1_180, ini))

@@ -142,6 +142,7 @@ import com.letrasyncpro.motor.Onda
 import com.letrasyncpro.motor.Preferencias
 import com.letrasyncpro.motor.SincronizadorDeLetra
 import com.letrasyncpro.motor.SincronizadorPorPalabras
+import com.letrasyncpro.motor.SepararVoz
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -261,6 +262,14 @@ class LetraSyncActivity : ComponentActivity() {
         val historial = remember { Historial() }
         var pasos by remember { mutableIntStateOf(0) } // para que deshacer/rehacer se repinten
         var parada by remember { mutableStateOf<Job?>(null) }
+        // Voz y música separadas: las pistas, cuál suena (0 la canción, 1 solo la voz, 2 el karaoke) y el avance.
+        var pistas by remember { mutableStateOf<SepararVoz.Pistas?>(null) }
+        var fuente by rememberSaveable { mutableIntStateOf(0) }
+        var separando by remember { mutableStateOf<Float?>(null) }
+        var bajandoSeparador by remember { mutableStateOf(false) }
+        var preguntarSeparar by remember { mutableStateOf(false) }
+        val pararSeparar = remember { AtomicBoolean(false) }
+        androidx.compose.runtime.DisposableEffect(Unit) { onDispose { pararSeparar.set(true) } }
 
         val letra = remember(texto) { LetraDeCancion.leer(texto) }
         val desordenadas = remember(letra) { EdicionDeLetra.desordenadas(letra) }
@@ -283,25 +292,46 @@ class LetraSyncActivity : ComponentActivity() {
             else antesDeEditar?.let { if (it != texto) { historial.apuntar(it); pasos++ }; antesDeEditar = null }
         }
 
-        // El reproductor y la onda, al tener canción.
+        // Al cambiar de canción: sus pistas separadas, si las hay.
         LaunchedEffect(audio) {
-            reproductor?.release(); reproductor = null; sonando = false; posicion = 0; duracion = 0
-            onda = null; inicios = emptyList(); bucle = null
-            val u = audio ?: return@LaunchedEffect
-            reproductor = runCatching {
-                MediaPlayer().apply { setDataSource(contexto, u); prepare(); setOnCompletionListener { sonando = false } }
-            }.getOrNull()
+            bucle = null
+            pistas = audio?.let { u -> withContext(Dispatchers.IO) { SepararVoz.pistas(contexto, u) } }
+            if (pistas == null) fuente = 0
+        }
+        // Lo que suena: la canción, solo la voz o el karaoke. Al cambiar, sigue por donde iba.
+        val origen = remember(audio, pistas, fuente) {
+            when { pistas == null || fuente == 0 -> audio; fuente == 1 -> Uri.fromFile(pistas!!.voz); else -> Uri.fromFile(pistas!!.karaoke) }
+        }
+        var audioDelReproductor by remember { mutableStateOf<Uri?>(null) }
+        LaunchedEffect(origen) {
+            // Misma canción (otra pista): sigue por donde iba; canción nueva: desde el principio.
+            val misma = audioDelReproductor == audio
+            audioDelReproductor = audio
+            val era = if (misma) posicion else 0; val sonaba = misma && sonando
+            reproductor?.release(); reproductor = null; sonando = false
+            val u = origen ?: run { posicion = 0; duracion = 0; return@LaunchedEffect }
+            reproductor = withContext(Dispatchers.IO) {
+                runCatching { MediaPlayer().apply { setDataSource(contexto, u); prepare() } }.getOrNull()
+            }?.apply { setOnCompletionListener { sonando = false } }
             duracion = reproductor?.duration ?: 0
-            if (reproductor == null) Toast.makeText(contexto, "No se puede reproducir esta canción", Toast.LENGTH_SHORT).show()
+            if (reproductor == null) { Toast.makeText(contexto, "No se puede reproducir esta canción", Toast.LENGTH_SHORT).show(); return@LaunchedEffect }
+            if (era > 0) { reproductor?.seekTo(era.coerceAtMost(duracion)); posicion = era.coerceAtMost(duracion) }
+            if (sonaba) { reproductor?.start(); runCatching { reproductor?.playbackParams = reproductor!!.playbackParams.setSpeed(velocidad) }; sonando = true }
+        }
+        // La onda: de la voz sola si está separada (así se ve dónde empieza a cantar), si no de la canción.
+        LaunchedEffect(audio, pistas) {
+            onda = null; inicios = emptyList()
+            val u = audio ?: return@LaunchedEffect
+            val voz = pistas?.voz
             val e = withContext(Dispatchers.IO) {
-                val cache = File(File(cacheDir, "ondas"), Biblioteca.idDe(u.toString()) + ".onda")
+                val cache = File(File(cacheDir, "ondas"), Biblioteca.idDe(u.toString()) + (if (voz != null) "-voz" else "") + ".onda5")
                 Onda.leer(cache) ?: runCatching {
-                    val archivo = copiaDe(u, "cancion-onda") ?: return@runCatching null
+                    val archivo = voz ?: copiaDe(u, "cancion-onda") ?: return@runCatching null
                     val pcm = File(cacheDir, "pcm-onda.raw")
                     try {
                         pcm.outputStream().buffered().use { com.letrasyncpro.motor.Transcriptor.decodificar(archivo, it) }
                         pcm.inputStream().buffered().use { Onda.envolvente(it) }.also { Onda.guardar(cache, it) }
-                    } finally { pcm.delete(); archivo.delete() }
+                    } finally { pcm.delete(); if (voz == null) archivo.delete() }
                 }.getOrNull()
             }
             onda = e
@@ -334,11 +364,37 @@ class LetraSyncActivity : ComponentActivity() {
         fun oir(desde: Int, durante: Long = 2_600) {
             ir(desde); sonar()
             parada?.cancel()
-            parada = alcance.launch { delay(durante); if (reproductor?.isPlaying == true) { reproductor?.pause(); sonando = false } }
+            parada = alcance.launch { delay((durante / velocidad).toLong()); if (reproductor?.isPlaying == true) { reproductor?.pause(); sonando = false } }
         }
-        fun cambiarVelocidad() {
-            velocidad = when (velocidad) { 1f -> 0.75f; 0.75f -> 0.5f; else -> 1f }
+        fun ponerVelocidad(v: Float) {
+            velocidad = v
             reproductor?.takeIf { it.isPlaying }?.let { r -> runCatching { r.playbackParams = r.playbackParams.setSpeed(velocidad) } }
+        }
+        fun cambiarVelocidad() = ponerVelocidad(when (velocidad) { 1f -> 0.75f; 0.75f -> 0.5f; else -> 1f })
+
+        /** Separar la voz y la música: baja el modelo la primera vez y deja las dos pistas. */
+        fun separar() {
+            val u = audio ?: return
+            if (!SepararVoz.soportado()) { Toast.makeText(contexto, "Este teléfono no puede separar la voz (hace falta uno de 64 bits)", Toast.LENGTH_LONG).show(); return }
+            pararSeparar.set(false); separando = 0f; bajandoSeparador = !SepararVoz.modeloListo(contexto)
+            val fino = Preferencias.separarFino(contexto)
+            alcance.launch {
+                val aviso = withContext(Dispatchers.IO) {
+                    if (bajandoSeparador) {
+                        val ok = SepararVoz.bajarModelo(contexto, { separando = it }, pararSeparar)
+                        bajandoSeparador = false; separando = 0f
+                        if (!ok) return@withContext if (pararSeparar.get()) null else "No se pudo bajar el separador: mira la conexión"
+                    }
+                    when (val r = SepararVoz.separar(contexto, u, fino, { separando = it }, pararSeparar)) {
+                        is SepararVoz.Resultado.Hecho -> { withContext(Dispatchers.Main) { pistas = r.pistas }; "Listo: ya puedes oír solo la voz o el karaoke" }
+                        SepararVoz.Resultado.SinModelo -> "Falta el separador"
+                        SepararVoz.Resultado.Cancelado -> null
+                        is SepararVoz.Resultado.Fallo -> "No se pudo separar: ${r.detalle}"
+                    }
+                }
+                separando = null
+                aviso?.let { Toast.makeText(contexto, it, Toast.LENGTH_LONG).show() }
+            }
         }
         // El bucle de una línea: al llegar a su final, vuelve a su principio.
         LaunchedEffect(bucle, posicion) {
@@ -367,6 +423,14 @@ class LetraSyncActivity : ComponentActivity() {
             if (u != null && g != null) runCatching {
                 contentResolver.openOutputStream(u)?.use { it.write(g().toByteArray()) }
                 Toast.makeText(contexto, "Guardada", Toast.LENGTH_SHORT).show()
+            }
+        }
+        var wavAGuardar by remember { mutableStateOf<File?>(null) }
+        val guardarWav = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { u ->
+            val f = wavAGuardar; wavAGuardar = null
+            if (u != null && f != null) alcance.launch {
+                val ok = withContext(Dispatchers.IO) { runCatching { contentResolver.openOutputStream(u)?.use { o -> f.inputStream().use { it.copyTo(o) } } }.isSuccess }
+                Toast.makeText(contexto, if (ok) "Guardada" else "No se pudo guardar", Toast.LENGTH_SHORT).show()
             }
         }
         val base = nombre.substringBeforeLast('.').ifBlank { "letra" }
@@ -492,6 +556,19 @@ class LetraSyncActivity : ComponentActivity() {
                 }
             )
 
+            separando?.let { a ->
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainer).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (bajandoSeparador) "Bajando el separador… ${(a * 100).toInt()} %" else "Separando voz y música… ${(a * 100).toInt()} %", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        LinearProgressIndicator(progress = { a }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp).clip(RoundedCornerShape(2.dp)), trackColor = relleno())
+                    }
+                    BotonDeBarra("Parar") { pararSeparar.set(true) }
+                }
+            }
             if (verBiblioteca) {
                 Box(Modifier.weight(1f)) {
                     ListaDeLaBiblioteca(
@@ -518,7 +595,8 @@ class LetraSyncActivity : ComponentActivity() {
                             alTocar = { marcar() }, alAtras = { atrasAlTocar() }
                         )
                         marcando -> MarcarEnLaOnda(
-                            letra, onda, inicios, anticipo, iman, posicion, sonando, duracion,
+                            letra, onda, inicios, anticipo, iman, posicion, sonando, duracion, velocidad, pistas != null,
+                            alVelocidad = { ponerVelocidad(it) },
                             alIr = { ir(it) },
                             alOir = { c -> oir((c - 700).coerceAtLeast(0)) },
                             alMarcar = { i, voz ->
@@ -589,6 +667,10 @@ class LetraSyncActivity : ComponentActivity() {
                 }
 
                 // ── El reproductor ─────────────────────────────────────────────────────────────
+                if (pistas != null) Segmentado(
+                    listOf("Canción", "Solo voz", "Karaoke"), fuente, alto = 32.dp,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp)
+                ) { fuente = it }
                 Reproductor(
                     sonando, posicion, duracion, velocidad, compacto = tocando || marcando,
                     alTocar = { tocar() }, alIr = { ir(it) }, alVelocidad = { cambiarVelocidad() },
@@ -605,6 +687,14 @@ class LetraSyncActivity : ComponentActivity() {
                     Fila("Guardar LRC", if (letra.porPalabras) "Con el tiempo de cada palabra" else "Para reproductores y karaoke", Icons.Filled.Download, Tema.AZUL, con, alTocar = { cerrar { guardar("lrc") { LetraDeCancion.aLrc(letra, letra.titulo ?: base) } } })
                     Fila("Guardar subtítulos SRT", "Para vídeos", Icons.Filled.Download, Tema.AZUL, con, alTocar = { cerrar { guardar("srt") { EdicionDeLetra.aSrt(letra, duracion) } } })
                     Fila("Compartir", null, Icons.Filled.Share, Tema.VERDE, con, separador = false, alTocar = { cerrar { compartirArchivo("$base.lrc", LetraDeCancion.aLrc(letra, letra.titulo ?: base), "Compartir la letra") } })
+                }
+                Grupo("Voz y música", pie = if (pistas == null) "Separa la voz del resto para cantar encima (karaoke) y para ver solo la voz en la onda. Tarda unos minutos; la primera vez baja el separador (${SepararVoz.MB_MODELO} MB)." else null) {
+                    if (pistas == null) Fila("Separar voz y música", null, Icons.Filled.GraphicEq, Tema.ACENTO, separando == null, separador = false, alTocar = { cerrar { if (!SepararVoz.modeloListo(contexto)) preguntarSeparar = true else separar() } })
+                    else {
+                        Fila("Guardar el karaoke", "La música sin la voz (WAV)", Icons.Filled.Download, Tema.AZUL, alTocar = { cerrar { wavAGuardar = pistas!!.karaoke; guardarWav.launch("$base (karaoke).wav") } })
+                        Fila("Guardar la voz", "Solo la voz (WAV)", Icons.Filled.Download, Tema.AZUL, alTocar = { cerrar { wavAGuardar = pistas!!.voz; guardarWav.launch("$base (voz).wav") } })
+                        Fila("Quitar las pistas separadas", null, Icons.Filled.DeleteSweep, Tema.ROJO, separador = false, alTocar = { cerrar { audio?.let { SepararVoz.borrar(contexto, it) }; fuente = 0; pistas = null } })
+                    }
                 }
                 Grupo("Toda la letra") {
                     Fila("Adelantar o atrasar todo", null, Icons.Filled.SwapHoriz, Tema.NARANJA, con, alTocar = { cerrar { moverTodo = true } })
@@ -637,6 +727,13 @@ class LetraSyncActivity : ComponentActivity() {
             text = { Text("Para sincronizar sola, LetraSync Pro baja una vez el reconocedor de voz (unos ${MotorWhisper.MODELOS[MotorWhisper.modelo(contexto)] ?: 160} MB). Después funciona sin conexión.") },
             confirmButton = { TextButton(onClick = { preguntarBajar = false; sincronizarSola() }) { Text("Bajar", fontWeight = FontWeight.SemiBold) } },
             dismissButton = { TextButton(onClick = { preguntarBajar = false }) { Text("Ahora no") } }
+        )
+        if (preguntarSeparar) AlertDialog(
+            onDismissRequest = { preguntarSeparar = false },
+            title = { Text("Separar voz y música") },
+            text = { Text("La primera vez se baja el separador (UVR MDX-Net, unos ${SepararVoz.MB_MODELO} MB). Después funciona sin conexión. Una canción tarda unos minutos; puedes seguir usando la app mientras.") },
+            confirmButton = { TextButton(onClick = { preguntarSeparar = false; separar() }) { Text("Bajar y separar", fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { preguntarSeparar = false }) { Text("Ahora no") } }
         )
         if (moverTodo) MoverTodaLaLetra(
             alAplicar = { d -> moverTodo = false; if (d != 0) cambiar(EdicionDeLetra.desplazar(letra, d)) },
@@ -983,6 +1080,12 @@ class LetraSyncActivity : ComponentActivity() {
                 HorizontalDivider(Modifier.padding(start = 16.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outline)
                 Fila("Imán", "Pegar la marca a donde empieza el sonido", flecha = false, separador = false, final = {
                     Switch(iman, { iman = it; Preferencias.ponerIman(contexto, it) }, colors = SwitchDefaults.colors(checkedTrackColor = Tema.VERDE, checkedThumbColor = Color.White, checkedBorderColor = Color.Transparent))
+                })
+            }
+            var fino by remember { mutableStateOf(Preferencias.separarFino(contexto)) }
+            Grupo("Separar voz y música", pie = "Fina: dos pasadas, la voz sale más limpia y tarda el doble.") {
+                Fila("Separación fina", null, flecha = false, separador = false, final = {
+                    Switch(fino, { fino = it; Preferencias.ponerSepararFino(contexto, it) }, colors = SwitchDefaults.colors(checkedTrackColor = Tema.VERDE, checkedThumbColor = Color.White, checkedBorderColor = Color.Transparent))
                 })
             }
             Grupo("Sincronización automática") {

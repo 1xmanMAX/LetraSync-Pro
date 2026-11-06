@@ -21,6 +21,9 @@ class Preferencias(val idioma: String, val segundoIdioma: String, val modelo: St
         fun anticipo(c: Context): Int = prefs(c).getInt("anticipo", ANTICIPO_POR_DEFECTO)
         fun ponerAnticipo(c: Context, ms: Int) = prefs(c).edit().putInt("anticipo", ms).apply()
         const val ANTICIPO_POR_DEFECTO = 300
+        /** Separar voz y música en dos pasadas (más limpia, el doble de lenta). */
+        fun separarFino(c: Context): Boolean = prefs(c).getBoolean("separarFino", false)
+        fun ponerSepararFino(c: Context, si: Boolean) = prefs(c).edit().putBoolean("separarFino", si).apply()
         /** Si las marcas arrastradas en la onda se pegan al inicio del sonido más cercano. */
         fun iman(c: Context): Boolean = prefs(c).getBoolean("iman", true)
         fun ponerIman(c: Context, si: Boolean) = prefs(c).edit().putBoolean("iman", si).apply()
