@@ -2,14 +2,19 @@
 
 La letra de una canción, sincronizada con su audio, en el teléfono y sin conexión.
 
-**Tres pasos, siempre a la vista** (rediseño 0.4.0, pensado para el dedo: todo lo que se toca mide 48 dp o más):
+**Al estilo de Apple** (0.5.0): colores y controles de iOS, la letra como en Apple Music. Tres pasos en un control
+segmentado:
 
 1. **Letra**: Pegar · Buscar (LRCLib) · Archivo (LRC, SRT, texto).
-2. **Sincronizar**: «Toca al ritmo» (por líneas o por palabras) con un botón enorme donde cae el pulgar, que vibra
-   y marca al bajar el dedo; o «Automática».
-3. **Afinar**: la onda con las líneas encima (se cogen por su asa) y, al tocar una línea, su tiempo grande con
-   − 0.1 s / + 0.1 s (mantener repite), «Aquí» (pone el tiempo de ahora y pasa a la siguiente), «Oír» y «Bucle».
-   **Mover una línea nunca mueve otra** ni la deja cruzarse con sus vecinas.
+2. **Sincronizar**:
+   - **En la onda** (la recomendada): la frase grande arriba y la onda de la canción debajo. La app propone dónde
+     empieza la voz y lo hace sonar; «Aceptar» o tocar en la onda donde empieza de verdad (deslizar para moverse,
+     pellizcar para acercar). Se guarda con un **anticipo** (0,3 s por defecto, en Ajustes): la letra aparece un
+     poco antes de cantarse. En la onda, la franja antes de cada marca es ese anticipo.
+   - **Al ritmo** y **Palabra a palabra**: a toques mientras suena (también con el anticipo y el retardo del dedo).
+   - **Automática**.
+3. **Revisar**: la onda con las líneas y, al tocar una, su tiempo grande con −0,1 / +0,1 (mantener repite), «Aquí»,
+   «Oír» y «Bucle». **Mover una línea nunca mueve otra** ni la deja cruzarse con sus vecinas.
 
 Lo poco frecuente va en «Más».
 

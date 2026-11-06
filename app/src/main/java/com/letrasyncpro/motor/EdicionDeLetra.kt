@@ -69,6 +69,21 @@ object EdicionDeLetra {
     fun desplazar(letra: Letra, deltaMs: Int): Letra =
         letra.copy(lineas = letra.lineas.map { correr(it, deltaMs) })
 
+    /**
+     * **Del momento en que se canta al momento en que aparece**: [vozMs] menos el [anticipoMs], nunca por debajo
+     * de 0. Es lo que se guarda (ver `Preferencias.anticipo`).
+     */
+    fun alAparecer(vozMs: Int, anticipoMs: Int): Int = (vozMs - anticipoMs).coerceAtLeast(0)
+
+    /**
+     * **Marcar en la onda**: la línea [i] empieza a cantarse en [vozMs]. Se guarda con su anticipo y, para no
+     * cruzarse, nunca antes que la anterior (las de detrás no se tocan: se marcan después).
+     */
+    fun marcarVoz(letra: Letra, i: Int, vozMs: Int, anticipoMs: Int): Letra {
+        val antes = (i - 1 downTo 0).firstNotNullOfOrNull { letra.lineas[it].ms }?.let { it + HUECO_MINIMO } ?: 0
+        return poner(letra, i, alAparecer(vozMs, anticipoMs).coerceAtLeast(antes))
+    }
+
     /** Quita los tiempos de las palabras (vuelve a ir por líneas). */
     fun sinPalabras(letra: Letra): Letra = letra.copy(lineas = letra.lineas.map { it.copy(palabras = null) })
 
@@ -177,7 +192,17 @@ object EdicionDeLetra {
      * **La letra guardada con toda su precisión**: el formato de PinDesk redondea al segundo, el LRC guarda
      * centésimas. Mientras se edita se usa este; a PinDesk se le devuelve el suyo.
      */
-    fun texto(letra: Letra): String = if (letra.conTiempos) LetraDeCancion.aLrc(letra) else LetraDeCancion.aGuardar(letra)
+    fun texto(letra: Letra): String {
+        if (!letra.conTiempos) return LetraDeCancion.aGuardar(letra)
+        // Un renglón en blanco entre línea y línea: así una sin tiempo detrás de una con tiempo sigue siendo
+        // suya y no se pega a la de delante al volver a leerla (`LetraDeCancion.leer` junta los renglones
+        // seguidos en un párrafo).
+        val cabecera = LetraDeCancion.aLrc(letra.copy(lineas = emptyList()))
+        val cuerpo = letra.lineas.joinToString("\n\n") { l ->
+            if (l.ms != null) LetraDeCancion.aLrc(Letra(listOf(l))) else l.texto
+        }
+        return if (cabecera.isBlank()) cuerpo else cabecera + "\n" + cuerpo
+    }
 
     /** Una línea nueva vacía detrás de [i] (con el tiempo que se le dé). */
     fun insertarDetras(letra: Letra, i: Int, texto: String, ms: Int? = null): Letra =

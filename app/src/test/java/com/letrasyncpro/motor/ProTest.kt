@@ -53,6 +53,28 @@ class ProTest {
     }
 
     @Test
+    fun marcar_en_la_onda_guarda_la_voz_con_su_anticipo_y_sugiere_la_siguiente() {
+        val l = Letra(listOf(Linea(null, "a"), Linea(null, "b"), Linea(null, "c")))
+        val r = EdicionDeLetra.marcarVoz(EdicionDeLetra.marcarVoz(l, 0, 1_000, 300), 1, 900, 300)
+        // La primera aparece 0,3 s antes de cantarse; la segunda, marcada antes que la primera, no la cruza.
+        assertEquals(listOf(700, 800, null), r.lineas.map { it.ms })
+        assertEquals(0, EdicionDeLetra.alAparecer(100, 300))
+        assertEquals(2_000, Onda.sugerencia(listOf(500, 1_200, 2_000), despuesDe = 1_000))
+        assertNull(Onda.sugerencia(listOf(500), despuesDe = 1_000))
+    }
+
+    @Test
+    fun marcar_la_primera_no_pega_las_demas_a_ella() {
+        val l = LetraDeCancion.leer("uno\ndos\ntres")
+        val r = LetraDeCancion.leer(EdicionDeLetra.texto(EdicionDeLetra.marcarVoz(l, 0, 1_000, 300)))
+        assertEquals(listOf("uno", "dos", "tres"), r.lineas.map { it.texto })
+        assertEquals(listOf(700, null, null), r.lineas.map { it.ms })
+        // Y con los datos de la canción y palabras, vuelve igual.
+        val c = Letra(listOf(Linea(1_000, "a b", listOf(1_000, 1_500)), Linea(null, "c")), titulo = "T", artista = "A")
+        assertEquals(c, LetraDeCancion.leer(EdicionDeLetra.texto(c)))
+    }
+
+    @Test
     fun la_palabra_que_suena() {
         val l = Linea(1_000, "a b c", listOf(null, 1_500, 2_000))
         assertEquals(-1, EdicionDeLetra.palabraActual(l, 900))

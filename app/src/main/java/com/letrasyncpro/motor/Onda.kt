@@ -72,6 +72,12 @@ object Onda {
     fun pegar(ms: Int, inicios: List<Int>, margenMs: Int = 300): Int =
         inicios.minByOrNull { kotlin.math.abs(it - ms) }?.takeIf { kotlin.math.abs(it - ms) <= margenMs } ?: ms
 
+    /**
+     * **Dónde parece empezar la siguiente frase**: el primer arranque de sonido después de [despuesDe] más
+     * [huecoMs] (lo que dura al menos una frase). Null si no hay ninguno: entonces se marca a mano.
+     */
+    fun sugerencia(inicios: List<Int>, despuesDe: Int, huecoMs: Int = 600): Int? = inicios.firstOrNull { it >= despuesDe + huecoMs }
+
     /** Guardada en caché (un float por punto) para no decodificar cada vez. */
     fun guardar(f: File, e: FloatArray) {
         f.parentFile?.mkdirs()

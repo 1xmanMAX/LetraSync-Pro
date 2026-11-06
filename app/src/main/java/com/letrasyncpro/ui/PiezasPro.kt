@@ -75,7 +75,7 @@ private const val VENTANA_MS = 10_000
 @Composable
 fun VistaDeOnda(
     onda: FloatArray?, lineas: List<LetraDeCancion.Linea>, posicion: Int, duracion: Int, elegida: Int?,
-    iman: Boolean, inicios: List<Int>, limites: (Int) -> IntRange,
+    iman: Boolean, inicios: List<Int>, limites: (Int) -> IntRange, anticipo: Int = 0,
     alIr: (Int) -> Unit, alMover: (Int, Int) -> Unit, alElegir: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -86,6 +86,7 @@ fun VistaDeOnda(
     val umbralPx = with(densidad) { 28.dp.toPx() }
     val asaPx = with(densidad) { 22.dp.toPx() }
     val lim by rememberUpdatedState(limites)
+    val a by rememberUpdatedState(anticipo)
     // Mientras se arrastra una marca, la ventana se queda quieta y la marca va donde el dedo.
     var arrastrada by remember { mutableIntStateOf(-1) }
     var msArrastre by remember { mutableIntStateOf(0) }
@@ -96,13 +97,17 @@ fun VistaDeOnda(
     val imanAhora by rememberUpdatedState(iman)
     val ini by rememberUpdatedState(inicios)
     var anchoPx by remember { mutableIntStateOf(1) }
+    /** Donde se ve la línea [i] en la onda: donde se canta (su tiempo más el anticipo). */
+    fun vozDe(i: Int): Int? = ls.getOrNull(i)?.ms?.let { it + a }
+    /** Los límites de la línea [i] en la onda (en voz). */
+    fun limVoz(i: Int): IntRange = lim(i).let { r -> (r.first + a)..(if (r.last == Int.MAX_VALUE) Int.MAX_VALUE else r.last + a) }
 
     // Al principio de la canción no se enseña «antes de 0:00»: la ventana empieza en 0 y la raya de lo que suena va a la izquierda.
     fun centro() = (centroFijo ?: pos).coerceAtLeast(VENTANA_MS / 2)
     fun msEn(x: Float): Int = (centro() - VENTANA_MS / 2 + x / anchoPx * VENTANA_MS).toInt()
     fun xDe(ms: Int): Float = ((ms - (centro() - VENTANA_MS / 2)).toFloat() / VENTANA_MS) * anchoPx
     fun marcaCerca(x: Float): Int? =
-        ls.indices.filter { ls[it].ms != null }.minByOrNull { abs(xDe(ls[it].ms!!) - x) }?.takeIf { abs(xDe(ls[it].ms!!) - x) <= umbralPx }
+        ls.indices.filter { ls[it].ms != null }.minByOrNull { abs(xDe(vozDe(it)!!) - x) }?.takeIf { abs(xDe(vozDe(it)!!) - x) <= umbralPx }
 
     Canvas(
         modifier.fillMaxWidth().height(112.dp).background(fondo).onSizeChanged { anchoPx = it.width.coerceAtLeast(1) }
@@ -119,12 +124,12 @@ fun VistaDeOnda(
                         // Solo se coge una línea por su asa (arriba) o muy cerca de su raya: así arrastrar la onda
                         // para moverse por la canción no se lleva una línea sin querer.
                         val porArriba = o.y <= asaPx * 1.6f
-                        if (m != null && (porArriba || abs(xDe(ls[m].ms!!) - o.x) <= umbralPx / 2)) { arrastrada = m; msArrastre = ls[m].ms!!; centroFijo = pos; desde = msArrastre; alElegir(m) }
+                        if (m != null && (porArriba || abs(xDe(vozDe(m)!!) - o.x) <= umbralPx / 2)) { arrastrada = m; msArrastre = vozDe(m)!!; centroFijo = pos; desde = msArrastre; alElegir(m) }
                         else { arrastrada = -1; desde = pos }
                     },
                     onDragEnd = {
                         if (arrastrada >= 0) {
-                            val fin = (if (imanAhora) Onda.pegar(msArrastre, ini) else msArrastre).coerceIn(lim(arrastrada))
+                            val fin = (if (imanAhora) Onda.pegar(msArrastre, ini) else msArrastre).coerceIn(limVoz(arrastrada))
                             alMover(arrastrada, fin)
                         }
                         arrastrada = -1; centroFijo = null
@@ -134,7 +139,7 @@ fun VistaDeOnda(
                         cambio.consume()
                         dx += d.x
                         val msPorPx = VENTANA_MS.toFloat() / anchoPx
-                        if (arrastrada >= 0) msArrastre = (desde + dx * msPorPx).toInt().coerceIn(lim(arrastrada))
+                        if (arrastrada >= 0) msArrastre = (desde + dx * msPorPx).toInt().coerceIn(limVoz(arrastrada))
                         else alIr((desde - dx * msPorPx).toInt().coerceIn(0, dur))
                     }
                 )
@@ -161,8 +166,10 @@ fun VistaDeOnda(
         }
         // Las líneas.
         ls.forEachIndexed { i, l ->
-            val ms = if (i == arrastrada) msArrastre else l.ms ?: return@forEachIndexed
+            val ms = if (i == arrastrada) msArrastre else vozDe(i) ?: return@forEachIndexed
             val x = xDe(ms)
+            // La franja del anticipo: desde que aparece la letra hasta que se canta.
+            if (a > 0) drawRect((if (i == elegida || i == arrastrada) Tema.CORAL else primario).copy(alpha = 0.14f), Offset(xDe(ms - a), 0f), androidx.compose.ui.geometry.Size(x - xDe(ms - a), h))
             if (x < -4 || x > w + 4) return@forEachIndexed
             val c = if (i == elegida || i == arrastrada) Tema.CORAL else primario
             drawLine(c, Offset(x, asaPx * 0.9f), Offset(x, h), strokeWidth = if (i == arrastrada) 5f else 3f)
@@ -172,7 +179,7 @@ fun VistaDeOnda(
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(asaPx * 0.45f)
             )
             // Las palabras de la línea, como rayitas.
-            l.palabras?.forEachIndexed { k, p -> if (k > 0 && p != null) { val px = xDe(p + (ms - (l.ms ?: ms))); drawLine(c.copy(alpha = 0.6f), Offset(px, h - 14f), Offset(px, h), strokeWidth = 2f) } }
+            l.palabras?.forEachIndexed { k, p -> if (k > 0 && p != null) { val px = xDe(p + a + (ms - a - (l.ms ?: (ms - a)))); drawLine(c.copy(alpha = 0.6f), Offset(px, h - 14f), Offset(px, h), strokeWidth = 2f) } }
         }
         // Lo que suena.
         val xp = xDe(pos)
