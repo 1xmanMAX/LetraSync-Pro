@@ -35,20 +35,66 @@ import java.util.Locale
  */
 object LetraDeCancion {
 
-    /** Una línea: en qué milisegundo empieza (null si no lo dice) y qué se canta. */
-    data class Linea(val ms: Int?, val texto: String)
+    /**
+     * Una línea: en qué milisegundo empieza (null si no lo dice) y qué se canta. [palabras], si se sincronizó
+     * palabra a palabra (LRC mejorado, `<mm:ss.xx>`): el tiempo de cada palabra de [texto] (las separadas por
+     * blancos), null las que no lo tienen.
+     */
+    data class Linea(val ms: Int?, val texto: String, val palabras: List<Int?>? = null) {
+        /** Las palabras de la línea, como se cuentan para [palabras]. */
+        val trozos: List<String> get() = texto.split(Regex("\\s+")).filter { it.isNotEmpty() }
+    }
 
     /** Una letra leída: sus líneas y lo que dijera de sí misma (título, artista). */
-    data class Letra(val lineas: List<Linea>, val titulo: String? = null, val artista: String? = null) {
+    data class Letra(
+        val lineas: List<Linea>, val titulo: String? = null, val artista: String? = null,
+        val album: String? = null, val autor: String? = null
+    ) {
         /** Si lleva tiempos: entonces se resalta la línea que suena. */
         val conTiempos: Boolean get() = lineas.any { it.ms != null }
+        /** Si alguna línea va palabra a palabra. */
+        val porPalabras: Boolean get() = lineas.any { l -> l.palabras?.any { it != null } == true }
     }
 
     /** Las etiquetas del LRC que no son letra (`[ti:Título]`, `[offset:+250]`…). */
     private val ETIQUETA = Regex("""^\[([A-Za-z#]+):(.*)]$""")
 
     /** Las marcas por palabra del LRC mejorado: `<00:12.34>`. */
-    private val POR_PALABRA = Regex("""<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>""")
+    private val POR_PALABRA = Regex("""<(\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?)>""")
+
+    /**
+     * Lo que queda tras las marcas de línea, con sus marcas por palabra: el texto limpio y el tiempo de cada
+     * palabra (null si no hay ninguna marca). Una palabra sin marca delante no tiene tiempo propio.
+     */
+    fun palabrasDe(resto: String, desfase: Int = 0): Pair<String, List<Int?>?> {
+        if (!POR_PALABRA.containsMatchIn(resto)) return resto.trim() to null
+        val palabras = ArrayList<String>(); val tiempos = ArrayList<Int?>()
+        var pendiente: Int? = null
+        var i = 0
+        for (m in POR_PALABRA.findAll(resto)) {
+            trocear(resto.substring(i, m.range.first), palabras, tiempos, pendiente).also { if (it) pendiente = null }
+            val t = m.groupValues[1].replace(Regex(":(\\d{1,2}):"), ":$1.")
+            pendiente = (tiempoDe(normalizar(t)) ?: tiempoDe(t))?.let { (it - desfase).coerceAtLeast(0) }
+            i = m.range.last + 1
+        }
+        trocear(resto.substring(i), palabras, tiempos, pendiente)
+        return palabras.joinToString(" ") to tiempos.takeIf { t -> t.any { it != null } }
+    }
+
+    /** `0:12.3` o `00:12:30` → algo que entiende [tiempoDe] (`00:12.30`). */
+    private fun normalizar(t: String): String {
+        val partes = t.split(':', '.')
+        if (partes.size < 2) return t
+        val m = partes[0]; val s = partes[1].padStart(2, '0'); val f = partes.getOrNull(2)
+        return if (f == null) "$m:$s" else "$m:$s.$f"
+    }
+
+    /** Añade las palabras de [trozo]; la primera lleva [tiempo]. Devuelve si lo usó. */
+    private fun trocear(trozo: String, palabras: MutableList<String>, tiempos: MutableList<Int?>, tiempo: Int?): Boolean {
+        val ps = trozo.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        ps.forEachIndexed { k, p -> palabras += p; tiempos += if (k == 0) tiempo else null }
+        return ps.isNotEmpty()
+    }
 
     /**
      * **Lee una letra pegada**: LRC, la de PixPin con tiempos o texto llano. Las líneas con tiempo
@@ -59,6 +105,8 @@ object LetraDeCancion {
         val lineas = texto.replace("\r\n", "\n").replace('\r', '\n').split('\n')
         var titulo: String? = null
         var artista: String? = null
+        var album: String? = null
+        var autor: String? = null
         var desfase = 0
         // Primero, si hay algún tiempo: sin ninguno es texto llano y se respeta tal cual.
         val hayTiempos = lineas.any { marcasAlPrincipio(it.trim()).first.isNotEmpty() }
@@ -78,13 +126,15 @@ object LetraDeCancion {
                 when (clave) {
                     "ti" -> titulo = valor.ifBlank { null }
                     "ar" -> artista = valor.ifBlank { null }
+                    "al" -> album = valor.ifBlank { null }
+                    "by" -> autor = valor.ifBlank { null }
                     "offset" -> desfase = valor.removePrefix("+").toIntOrNull() ?: 0
                 }
                 anteriorEnBlanco = true
                 continue
             }
             val (marcas, resto) = marcasAlPrincipio(linea)
-            val letra = resto.replace(POR_PALABRA, "").trim()
+            val (letra, palabras) = palabrasDe(resto, desfase)
             if (marcas.isEmpty()) {
                 // Sin marca: si sigue pegada a una línea con tiempo (un párrafo de PixPin partido en
                 // dos renglones), es suya; si no, va suelta.
@@ -94,11 +144,16 @@ object LetraDeCancion {
                 } else salida.add(Linea(null, letra))
             } else {
                 // `offset` positivo adelanta la letra (LRC): la línea sale antes.
-                marcas.forEach { salida.add(Linea((it - desfase).coerceAtLeast(0), letra)) }
+                marcas.forEachIndexed { k, it ->
+                    val ms = (it - desfase).coerceAtLeast(0)
+                    // Un estribillo con dos marcas: las palabras se corren con su línea.
+                    val p = if (k == 0) palabras else palabras?.map { w -> w?.let { w2 -> w2 - marcas[0] + it } }
+                    salida.add(Linea(ms, letra, p))
+                }
             }
             anteriorEnBlanco = false
         }
-        return Letra(ordenar(salida), titulo, artista)
+        return Letra(ordenar(salida), titulo, artista, album, autor)
     }
 
     /**
@@ -178,17 +233,29 @@ object LetraDeCancion {
     }
 
     /** **La letra en LRC** (`[mm:ss.xx]línea`), para copiarla a otra aplicación de karaoke. */
-    fun aLrc(letra: Letra, titulo: String? = letra.titulo, artista: String? = letra.artista): String = buildString {
+    fun aLrc(letra: Letra, titulo: String? = letra.titulo, artista: String? = letra.artista, conPalabras: Boolean = true): String = buildString {
         titulo?.takeIf { it.isNotBlank() }?.let { append("[ti:").append(it).append("]\n") }
         artista?.takeIf { it.isNotBlank() }?.let { append("[ar:").append(it).append("]\n") }
+        letra.album?.takeIf { it.isNotBlank() }?.let { append("[al:").append(it).append("]\n") }
+        letra.autor?.takeIf { it.isNotBlank() }?.let { append("[by:").append(it).append("]\n") }
         letra.lineas.forEach { l ->
             val t = l.texto.lines().filter { it.isNotBlank() }.joinToString(" / ")
+            val p = l.palabras
             if (l.ms != null) {
-                val cs = l.ms / 10
-                append(String.format(Locale.ROOT, "[%02d:%02d.%02d]", cs / 6000, (cs / 100) % 60, cs % 100)).append(t).append('\n')
+                append('[').append(marcaLrc(l.ms)).append(']')
+                if (conPalabras && p != null && p.any { it != null }) {
+                    append(l.trozos.mapIndexed { k, w -> p.getOrNull(k)?.let { "<${marcaLrc(it)}>$w" } ?: w }.joinToString(" "))
+                } else append(t)
+                append('\n')
             } else if (t.isNotEmpty()) append(t).append('\n')
         }
     }.trimEnd()
+
+    /** `mm:ss.xx`, como lo escribe el LRC. */
+    fun marcaLrc(ms: Int): String {
+        val cs = ms / 10
+        return String.format(Locale.ROOT, "%02d:%02d.%02d", cs / 6000, (cs / 100) % 60, cs % 100)
+    }
 
     /**
      * **La línea que suena en [ms]**: la última cuyo tiempo ya pasó. -1 antes de la primera o si
@@ -220,6 +287,9 @@ class SincronizadorDeLetra(textos: List<String>) {
     val textos: List<String> = textos.map { it.trim() }.filter { it.isNotEmpty() }
     private val tiempos = arrayOfNulls<Int>(this.textos.size)
 
+    /** Lo que tarda el dedo en reaccionar (Ajustes): se resta a cada toque. */
+    var retardoMs: Int = 0
+
     /** La línea que toca marcar ahora. Igual al número de líneas: ya están todas. */
     var siguiente: Int = 0
         private set
@@ -233,7 +303,7 @@ class SincronizadorDeLetra(textos: List<String>) {
     fun marcar(ms: Int): Boolean {
         if (terminado) return false
         val anterior = if (siguiente > 0) tiempos[siguiente - 1] ?: 0 else 0
-        tiempos[siguiente] = maxOf(ms.coerceAtLeast(0), anterior)
+        tiempos[siguiente] = maxOf((ms - retardoMs).coerceAtLeast(0), anterior)
         siguiente++
         return !terminado
     }

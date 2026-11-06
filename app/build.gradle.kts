@@ -13,8 +13,8 @@ android {
         targetSdk = 36
         // El reconocedor (sherpa-onnx) solo trae su biblioteca de 64 bits.
         ndk { abiFilters += listOf("arm64-v8a") }
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -46,4 +46,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

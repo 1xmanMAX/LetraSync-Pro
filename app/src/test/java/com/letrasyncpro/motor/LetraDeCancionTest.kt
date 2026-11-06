@@ -34,9 +34,22 @@ class LetraDeCancionTest {
     }
 
     @Test
-    fun las_marcas_por_palabra_del_lrc_mejorado_se_quitan() {
-        val l = LetraDeCancion.leer("[00:01.00]<00:01.00>Hola <00:01.50>mundo")
-        assertEquals(listOf(Linea(1_000, "Hola mundo")), l.lineas)
+    fun las_marcas_por_palabra_del_lrc_mejorado_se_leen_y_vuelven_igual() {
+        val l = LetraDeCancion.leer("[al:Disco]\n[by:yo]\n[00:01.00]<00:01.00>Hola <00:01.50>mundo bonito")
+        assertEquals(listOf(Linea(1_000, "Hola mundo bonito", listOf(1_000, 1_500, null))), l.lineas)
+        assertTrue(l.porPalabras)
+        assertEquals("Disco", l.album); assertEquals("yo", l.autor)
+        assertEquals("[al:Disco]\n[by:yo]\n[00:01.00]<00:01.00>Hola <00:01.50>mundo bonito", LetraDeCancion.aLrc(l))
+        // A PinDesk va por líneas.
+        assertEquals("[0:01] Hola mundo bonito", LetraDeCancion.aGuardar(l))
+        assertEquals("[00:01.00]Hola mundo bonito", LetraDeCancion.aLrc(l, conPalabras = false).substringAfterLast('\n'))
+    }
+
+    @Test
+    fun la_primera_palabra_sin_marca_es_la_de_la_linea() {
+        val l = LetraDeCancion.leer("[00:02.00]Hola <00:02.40>mundo")
+        assertEquals(listOf(null, 2_400), l.lineas[0].palabras)
+        assertEquals("Hola mundo", l.lineas[0].texto)
     }
 
     @Test
