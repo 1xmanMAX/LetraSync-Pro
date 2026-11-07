@@ -59,7 +59,7 @@ object LrcLib {
     fun buscar(titulo: String, artista: String, version: String): List<Resultado> {
         val c = URL(url(titulo, artista)).openConnection() as HttpURLConnection
         c.connectTimeout = 10_000; c.readTimeout = 15_000
-        c.setRequestProperty("User-Agent", "LetraSync Pro $version (https://github.com/1xmanMAX/letrasync-pro-android)")
+        c.setRequestProperty("User-Agent", "LetraSync Pro $version (https://github.com/1xmanMAX/LetraSync-Pro)")
         try {
             if (c.responseCode != 200) throw java.io.IOException("LRCLib respondió ${c.responseCode}")
             return leer(c.inputStream.use { it.readBytes().decodeToString() })
