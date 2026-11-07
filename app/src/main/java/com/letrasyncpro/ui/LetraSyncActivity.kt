@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
@@ -131,6 +132,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.letrasyncpro.Integracion
+import com.letrasyncpro.Automatica
 import com.letrasyncpro.motor.AlinearLetra
 import com.letrasyncpro.motor.Biblioteca
 import com.letrasyncpro.motor.EdicionDeLetra
@@ -170,7 +172,20 @@ class LetraSyncActivity : ComponentActivity() {
 
     enum class Paso { LETRA, SINCRONIZAR, AFINAR }
 
+    private val archivoDeError get() = File(filesDir, "ultimo-error.txt")
+    private fun errorAnterior(): String? = archivoDeError.takeIf { it.exists() }?.readText()
+    private fun borrarErrorAnterior() { archivoDeError.delete() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Un fallo sin atrapar: se apunta (para enseñarlo al volver y poder mandarlo) y se deja seguir su curso.
+        val previo = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { hilo, e ->
+            runCatching {
+                archivoDeError.writeText("LetraSync Pro ${com.letrasyncpro.BuildConfig.VERSION_NAME} · Android ${android.os.Build.VERSION.RELEASE} · ${android.os.Build.MODEL}\n" +
+                    "Hilo: ${hilo.name}\n" + android.util.Log.getStackTraceString(e))
+            }
+            previo?.uncaughtException(hilo, e)
+        }
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val desdePinDesk = intent?.action == Integracion.ACCION
@@ -247,6 +262,9 @@ class LetraSyncActivity : ComponentActivity() {
         var porLineas by remember { mutableStateOf<SincronizadorDeLetra?>(null) }
         var porPalabras by remember { mutableStateOf<SincronizadorPorPalabras?>(null) }
         var marcadas by remember { mutableIntStateOf(0) }
+        // A toques: tocar al terminar cada frase (lo natural: se oye, acaba y se toca) o al empezar.
+        var alTerminarFrase by remember { mutableStateOf(Preferencias.alTerminar(contexto)) }
+        var finDeLaUltima by remember { mutableStateOf<Int?>(null) }
         var elegida by remember { mutableStateOf<Int?>(null) }
         var bucle by remember { mutableStateOf<Pair<Int, Int>?>(null) }
         var onda by remember { mutableStateOf<FloatArray?>(null) }
@@ -262,6 +280,9 @@ class LetraSyncActivity : ComponentActivity() {
         val historial = remember { Historial() }
         var pasos by remember { mutableIntStateOf(0) } // para que deshacer/rehacer se repinten
         var parada by remember { mutableStateOf<Job?>(null) }
+        // El informe de un fallo (el reconocedor que se cayó, o la app la última vez) para mandarlo.
+        var informe by remember { mutableStateOf<String?>(null) }
+        var cayoLaApp by remember { mutableStateOf(errorAnterior()) }
         // Voz y música separadas: las pistas, cuál suena (0 la canción, 1 solo la voz, 2 el karaoke) y el avance.
         var pistas by remember { mutableStateOf<SepararVoz.Pistas?>(null) }
         var fuente by rememberSaveable { mutableIntStateOf(0) }
@@ -293,18 +314,25 @@ class LetraSyncActivity : ComponentActivity() {
         }
 
         // Al cambiar de canción: sus pistas separadas, si las hay.
+        var cancionWav by remember { mutableStateOf<File?>(null) }
         LaunchedEffect(audio) {
-            bucle = null
+            bucle = null; cancionWav = null
             pistas = audio?.let { u -> withContext(Dispatchers.IO) { SepararVoz.pistas(contexto, u) } }
             if (pistas == null) fuente = 0
+            // La canción de trabajo (WAV): el reproductor va al ms exacto y la onda lee lo mismo que suena.
+            cancionWav = audio?.let { u -> withContext(Dispatchers.IO) { SepararVoz.prepararCancion(contexto, u) } }
         }
         // Lo que suena: la canción, solo la voz o el karaoke. Al cambiar, sigue por donde iba.
         val origen = remember(audio, pistas, fuente) {
             when { pistas == null || fuente == 0 -> audio; fuente == 1 -> Uri.fromFile(pistas!!.voz); else -> Uri.fromFile(pistas!!.karaoke) }
-        }
+        }.let { o -> if (o == audio && cancionWav != null) Uri.fromFile(cancionWav) else o }
+        // El WAV de lo que suena, para oírlo al arrastrar la onda.
+        val wavQueSuena = when { pistas != null && fuente == 1 -> pistas!!.voz; pistas != null && fuente == 2 -> pistas!!.karaoke; else -> cancionWav }
+        val raspador = remember(wavQueSuena) { wavQueSuena?.let { runCatching { com.letrasyncpro.motor.Raspador(it) }.getOrNull() } }
+        androidx.compose.runtime.DisposableEffect(raspador) { onDispose { raspador?.close() } }
         var audioDelReproductor by remember { mutableStateOf<Uri?>(null) }
         LaunchedEffect(origen) {
-            // Misma canción (otra pista): sigue por donde iba; canción nueva: desde el principio.
+            // Misma canción (otra pista, o ya su WAV): sigue por donde iba; canción nueva: desde el principio.
             val misma = audioDelReproductor == audio
             audioDelReproductor = audio
             val era = if (misma) posicion else 0; val sonaba = misma && sonando
@@ -315,7 +343,7 @@ class LetraSyncActivity : ComponentActivity() {
             }?.apply { setOnCompletionListener { sonando = false } }
             duracion = reproductor?.duration ?: 0
             if (reproductor == null) { Toast.makeText(contexto, "No se puede reproducir esta canción", Toast.LENGTH_SHORT).show(); return@LaunchedEffect }
-            if (era > 0) { reproductor?.seekTo(era.coerceAtMost(duracion)); posicion = era.coerceAtMost(duracion) }
+            if (era > 0) { reproductor?.seekTo(era.coerceAtMost(duracion).toLong(), MediaPlayer.SEEK_CLOSEST); posicion = era.coerceAtMost(duracion) }
             if (sonaba) { reproductor?.start(); runCatching { reproductor?.playbackParams = reproductor!!.playbackParams.setSpeed(velocidad) }; sonando = true }
         }
         // La onda: de la voz sola si está separada (así se ve dónde empieza a cantar), si no de la canción.
@@ -326,19 +354,24 @@ class LetraSyncActivity : ComponentActivity() {
             val e = withContext(Dispatchers.IO) {
                 val cache = File(File(cacheDir, "ondas"), Biblioteca.idDe(u.toString()) + (if (voz != null) "-voz" else "") + ".onda5")
                 Onda.leer(cache) ?: runCatching {
-                    val archivo = voz ?: copiaDe(u, "cancion-onda") ?: return@runCatching null
+                    val archivo = voz ?: withContext(Dispatchers.IO) { SepararVoz.prepararCancion(contexto, u) } ?: return@runCatching null
                     val pcm = File(cacheDir, "pcm-onda.raw")
                     try {
                         pcm.outputStream().buffered().use { com.letrasyncpro.motor.Transcriptor.decodificar(archivo, it) }
                         pcm.inputStream().buffered().use { Onda.envolvente(it) }.also { Onda.guardar(cache, it) }
-                    } finally { pcm.delete(); if (voz == null) archivo.delete() }
+                    } finally { pcm.delete() }
                 }.getOrNull()
             }
             onda = e
             if (e != null) inicios = withContext(Dispatchers.Default) { Onda.inicios(e) }
         }
+        // La posición, a cada fotograma y sin tirones ([RelojSuave]): la onda y la letra se mueven lisas.
+        val reloj = remember { com.letrasyncpro.motor.RelojSuave() }
         LaunchedEffect(sonando) {
-            while (sonando) { posicion = reproductor?.currentPosition ?: 0; delay(40) }
+            if (sonando) reloj.reiniciar(reproductor?.currentPosition ?: posicion)
+            while (sonando) {
+                androidx.compose.runtime.withFrameMillis { t -> posicion = reloj.ahora(reproductor?.currentPosition ?: posicion, t, velocidad, true) }
+            }
             posicion = reproductor?.currentPosition ?: posicion
         }
         // La biblioteca se pone al día sola (no con lo que llega de PinDesk: su audio es prestado).
@@ -359,7 +392,14 @@ class LetraSyncActivity : ComponentActivity() {
             }
         }
         fun sonar() { if (reproductor?.isPlaying != true) tocar() }
-        fun ir(ms: Int) { val m = ms.coerceIn(0, duracion.coerceAtLeast(0)); reproductor?.seekTo(m); posicion = m }
+        fun ir(ms: Int) {
+            val m = ms.coerceIn(0, duracion.coerceAtLeast(0))
+            reproductor?.seekTo(m.toLong(), MediaPlayer.SEEK_CLOSEST); posicion = m
+            reloj.reiniciar(m)
+        }
+        /** Arrastrando la onda: se mueve y suena lo que hay bajo el dedo (si está parada). */
+        fun raspar(ms: Int) { ir(ms); if (!sonando) raspador?.ir(posicion) }
+        fun soltarRaspado() { raspador?.soltar() }
         /** Oír un trozo: desde [desde] durante [durante] ms, y para. */
         fun oir(desde: Int, durante: Long = 2_600) {
             ir(desde); sonar()
@@ -436,42 +476,43 @@ class LetraSyncActivity : ComponentActivity() {
         val base = nombre.substringBeforeLast('.').ifBlank { "letra" }
         fun guardar(ext: String, contenido: () -> String) { aGuardar = contenido; guardarArchivo.launch("$base.$ext") }
 
+        /** La automática, en el proceso `:reconocedor` ([Automatica]): si el reconocedor se cae, la app no. */
         fun sincronizarSola() {
             val u = audio ?: return
-            val lineas = AlinearLetra.lineasDeLaLetra(texto)
-            if (lineas.isEmpty()) { paso = Paso.LETRA; return }
+            if (AlinearLetra.lineasDeLaLetra(texto).isEmpty()) { paso = Paso.LETRA; return }
             if (!MotorWhisper.soportado()) { Toast.makeText(contexto, "Este teléfono no puede cargar el reconocedor (hace falta uno de 64 bits)", Toast.LENGTH_LONG).show(); return }
-            cancelar.set(false)
-            avance = 0f; bajando = !MotorWhisper.modeloListo(contexto)
+            avance = 0f; bajando = false
             val pegada = texto
             val a = anticipo
             alcance.launch {
-                val aviso = withContext(Dispatchers.IO) {
-                    if (bajando) {
-                        val ok = MotorWhisper.asegurarModelo(contexto) { avance = it } != null
-                        bajando = false; avance = 0f
-                        if (!ok) return@withContext "No se pudo bajar el reconocedor: mira la conexión"
-                    }
-                    val archivo = copiaDe(u) ?: return@withContext "No se pudo leer la canción"
-                    when (val o = OirCancion.oir(contexto, archivo, lineas, { avance = it }, cancelar)) {
-                        is OirCancion.Oido.Texto -> {
-                            val r = AlinearLetra.conTiempos(pegada, o.trozos, o.duracionMs) ?: return@withContext "No se reconoció la letra en la canción"
-                            withContext(Dispatchers.Main) {
-                                // Lo oído es cuando se canta: con su anticipo, aparece antes.
-                                cambiar(EdicionDeLetra.desplazar(LetraDeCancion.leer(r.texto), -a)); paso = Paso.AFINAR
-                                confianzas = r.alineado.lineas.map { if (it.anclada) it.confianza else 0f }
-                            }
-                            val n = r.alineado.ancladas; val t = r.alineado.lineas.size
-                            if (r.alineado.aOjo) "Lista: $n de $t líneas se oyeron. Revisa las de color ámbar." else "Lista: $n de $t líneas se oyeron"
+                val cancion = withContext(Dispatchers.IO) { SepararVoz.prepararCancion(contexto, u) }
+                if (cancion == null) { avance = null; Toast.makeText(contexto, "No se pudo leer la canción", Toast.LENGTH_LONG).show(); return@launch }
+                Automatica.empezar(contexto, cancion, pegada)
+                delay(1_500) // lo que tarda en arrancar el proceso
+                var muerto = 0
+                while (true) {
+                    val vivo = withContext(Dispatchers.IO) { Automatica.vivo(contexto) }
+                    // Muerto dos veces seguidas y sin resultado: se cayó (no un instante entre arrancar y escribir).
+                    val e = withContext(Dispatchers.IO) { Automatica.estado(contexto, vivo || muerto < 2) }
+                    if (!vivo) muerto++ else muerto = 0
+                    when (e) {
+                        is Automatica.Estado.EnCurso -> { avance = e.avance; bajando = e.bajando }
+                        is Automatica.Estado.Hecho -> {
+                            // Lo oído es cuando se canta: con su anticipo, aparece antes.
+                            cambiar(EdicionDeLetra.desplazar(LetraDeCancion.leer(e.texto), -a)); paso = Paso.AFINAR
+                            confianzas = e.confianzas
+                            avance = null; Toast.makeText(contexto, e.aviso, Toast.LENGTH_LONG).show(); return@launch
                         }
-                        OirCancion.Oido.SinModelo -> "Falta el reconocedor y no se pudo bajar"
-                        OirCancion.Oido.Nada -> "No se entendió nada en la canción"
-                        OirCancion.Oido.Cancelada -> null
-                        is OirCancion.Oido.Fallo -> "No se pudo oír la canción" + (o.detalle?.let { ": $it" } ?: "")
+                        is Automatica.Estado.Fallo -> { avance = null; Toast.makeText(contexto, e.aviso, Toast.LENGTH_LONG).show(); return@launch }
+                        Automatica.Estado.Cancelado -> { avance = null; return@launch }
+                        Automatica.Estado.SeCayo -> {
+                            avance = null
+                            informe = withContext(Dispatchers.IO) { Automatica.informe(contexto) }
+                            return@launch
+                        }
                     }
+                    delay(400)
                 }
-                avance = null
-                aviso?.let { Toast.makeText(contexto, it, Toast.LENGTH_LONG).show() }
             }
         }
 
@@ -491,16 +532,24 @@ class LetraSyncActivity : ComponentActivity() {
             ir(0); sonar()
         }
         fun acabarDeTocar(guardar: Boolean = true) {
-            val nueva = porLineas?.letra() ?: porPalabras?.letra()
-            porLineas = null; porPalabras = null
+            var nueva = porLineas?.letra() ?: porPalabras?.letra()
+            // «Al terminar»: el último toque cierra la última frase con una marca vacía (la letra se apaga ahí).
+            val fin = finDeLaUltima
+            if (nueva != null && fin != null) nueva = nueva.copy(lineas = nueva.lineas + LetraDeCancion.Linea(fin, ""))
+            porLineas = null; porPalabras = null; finDeLaUltima = null
             reproductor?.pause(); sonando = false
             if (guardar && nueva != null && nueva.conTiempos) { cambiar(nueva); paso = Paso.AFINAR }
         }
         fun marcar() {
             vibrar.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            val sigue = porLineas?.marcar(posicion) ?: porPalabras?.marcar(posicion) ?: return
+            val s = porLineas
+            // «Al terminar cada frase»: tras la última, un toque más dice dónde acaba.
+            if (s != null && alTerminarFrase && s.terminado) {
+                finDeLaUltima = (posicion - Preferencias.retardo(contexto)).coerceAtLeast(0); acabarDeTocar(); return
+            }
+            val sigue = s?.marcar(posicion) ?: porPalabras?.marcar(posicion) ?: return
             marcadas++
-            if (!sigue) acabarDeTocar()
+            if (!sigue && !(s != null && alTerminarFrase)) acabarDeTocar()
         }
         fun atrasAlTocar() {
             (porLineas?.deshacer() ?: porPalabras?.deshacer())?.let { ir(it) }
@@ -591,16 +640,18 @@ class LetraSyncActivity : ComponentActivity() {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when {
                         tocando -> PadDeToques(
-                            porLineas, porPalabras, letra, marcadas,
+                            porLineas, porPalabras, letra, marcadas, alTerminarFrase,
+                            alModo = { alTerminarFrase = it; Preferencias.ponerAlTerminar(contexto, it) },
                             alTocar = { marcar() }, alAtras = { atrasAlTocar() }
                         )
                         marcando -> MarcarEnLaOnda(
-                            letra, onda, inicios, anticipo, iman, posicion, sonando, duracion, velocidad, pistas != null,
+                            letra, onda, anticipo, posicion, sonando, duracion, velocidad, pistas != null,
                             alVelocidad = { ponerVelocidad(it) },
-                            alIr = { ir(it) },
-                            alOir = { c -> oir((c - 700).coerceAtLeast(0)) },
-                            alMarcar = { i, voz ->
+                            alRaspar = { raspar(it) }, alSoltar = { soltarRaspado() }, alTocar = { tocar() },
+                            alMarcar = { i ->
                                 vibrar.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                // Sonando, el dedo llega un poco tarde: se le resta su retardo. Parada, va justo en la raya.
+                                val voz = if (sonando) posicion - Preferencias.retardo(contexto) else posicion
                                 cambiar(EdicionDeLetra.marcarVoz(letra, i, voz, anticipo))
                             },
                             alTerminar = { acabarDeMarcar() }
@@ -622,15 +673,15 @@ class LetraSyncActivity : ComponentActivity() {
                             alRitmo = { empezarATocar(false) },
                             alPalabras = { empezarATocar(true) },
                             alSola = { if (!MotorWhisper.modeloListo(contexto)) preguntarBajar = true else sincronizarSola() },
-                            alParar = { cancelar.set(true) }
+                            alParar = { cancelar.set(true); Automatica.parar(contexto) }
                         )
                         else -> Column(Modifier.fillMaxSize()) {
                             VistaDeOnda(
                                 onda, letra.lineas, posicion, duracion, elegida, iman, inicios,
                                 limites = { EdicionDeLetra.limites(letra, it) }, anticipo = anticipo,
-                                alIr = { ir(it) },
+                                alIr = { raspar(it) },
                                 alMover = { i, voz -> cambiar(EdicionDeLetra.llevar(letra, i, voz - anticipo)); elegida = i },
-                                alElegir = { elegir(it) },
+                                alElegir = { elegir(it) }, alSoltar = { soltarRaspado() },
                                 modifier = Modifier.padding(horizontal = 16.dp).clip(RoundedCornerShape(14.dp))
                             )
                             Box(Modifier.weight(1f)) {
@@ -640,8 +691,7 @@ class LetraSyncActivity : ComponentActivity() {
                             }
                             val e = elegida
                             if (e != null && e in letra.lineas.indices) AfinarLinea(
-                                linea = letra.lineas[e], numero = e + 1, total = letra.lineas.size, enBucle = bucle != null,
-                                fuera = e in desordenadas,
+                                linea = letra.lineas[e], fuera = e in desordenadas,
                                 alMover = { d -> cambiar(EdicionDeLetra.ajustar(letra, e, d)) },
                                 alAqui = {
                                     vibrar.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -650,16 +700,6 @@ class LetraSyncActivity : ComponentActivity() {
                                     if (e < letra.lineas.lastIndex) elegir(e + 1)
                                 },
                                 alOir = { letra.lineas[e].ms?.let { oir((it - 1_500).coerceAtLeast(0), 3_500) } },
-                                alBucle = {
-                                    val ini = letra.lineas[e].ms
-                                    bucle = if (bucle != null || ini == null) null else {
-                                        val fin = letra.lineas.drop(e + 1).firstNotNullOfOrNull { it.ms }?.takeIf { it > ini } ?: (ini + 4000)
-                                        val desde = (ini - 500).coerceAtLeast(0)
-                                        ir(desde); sonar(); desde to fin
-                                    }
-                                },
-                                alAnterior = { elegir((e - 1).coerceAtLeast(0)) },
-                                alSiguiente = { elegir((e + 1).coerceAtMost(letra.lineas.lastIndex)) },
                                 alCerrar = { elegir(null) }
                             )
                         }
@@ -667,12 +707,12 @@ class LetraSyncActivity : ComponentActivity() {
                 }
 
                 // ── El reproductor ─────────────────────────────────────────────────────────────
-                if (pistas != null) Segmentado(
+                if (pistas != null && !marcando && !tocando) Segmentado(
                     listOf("Canción", "Solo voz", "Karaoke"), fuente, alto = 32.dp,
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp)
                 ) { fuente = it }
-                Reproductor(
-                    sonando, posicion, duracion, velocidad, compacto = tocando || marcando,
+                if (!marcando) Reproductor(
+                    sonando, posicion, duracion, velocidad, compacto = tocando,
                     alTocar = { tocar() }, alIr = { ir(it) }, alVelocidad = { cambiarVelocidad() },
                     alVistaPrevia = if (letra.conTiempos && !tocando && !marcando) ({ vistaPrevia = true; sonar() }) else null
                 )
@@ -728,6 +768,24 @@ class LetraSyncActivity : ComponentActivity() {
             confirmButton = { TextButton(onClick = { preguntarBajar = false; sincronizarSola() }) { Text("Bajar", fontWeight = FontWeight.SemiBold) } },
             dismissButton = { TextButton(onClick = { preguntarBajar = false }) { Text("Ahora no") } }
         )
+        informe?.let { inf ->
+            AlertDialog(
+                onDismissRequest = { informe = null },
+                title = { Text("El reconocedor se cerró") },
+                text = { Text("La sincronización automática se cerró antes de terminar (la app sigue bien). Suele ser por memoria: prueba con el reconocedor «Rápida» en Ajustes. Si quieres, manda el informe para arreglarlo.") },
+                confirmButton = { TextButton(onClick = { informe = null; compartirArchivo("informe-letrasync.txt", inf, "Mandar el informe") }) { Text("Mandar el informe", fontWeight = FontWeight.SemiBold) } },
+                dismissButton = { TextButton(onClick = { informe = null }) { Text("Cerrar") } }
+            )
+        }
+        cayoLaApp?.let { inf ->
+            AlertDialog(
+                onDismissRequest = { cayoLaApp = null; borrarErrorAnterior() },
+                title = { Text("La app se cerró la última vez") },
+                text = { Text("Perdona. Si mandas el informe se puede arreglar.") },
+                confirmButton = { TextButton(onClick = { cayoLaApp = null; borrarErrorAnterior(); compartirArchivo("informe-letrasync.txt", inf, "Mandar el informe") }) { Text("Mandar el informe", fontWeight = FontWeight.SemiBold) } },
+                dismissButton = { TextButton(onClick = { cayoLaApp = null; borrarErrorAnterior() }) { Text("Cerrar") } }
+            )
+        }
         if (preguntarSeparar) AlertDialog(
             onDismissRequest = { preguntarSeparar = false },
             title = { Text("Separar voz y música") },
@@ -805,7 +863,7 @@ class LetraSyncActivity : ComponentActivity() {
                 }
             }
             Grupo("O a toques, mientras suena") {
-                Fila("Al ritmo", "Un toque al empezar cada línea", Icons.Filled.TouchApp, Tema.NARANJA, avance == null, alto = 60.dp, alTocar = alRitmo)
+                Fila("Al ritmo", "Un toque cuando acaba cada frase", Icons.Filled.TouchApp, Tema.NARANJA, avance == null, alto = 60.dp, alTocar = alRitmo)
                 Fila("Palabra a palabra", "Un toque por palabra, para karaoke", Icons.Filled.TextFields, Tema.MORADO, avance == null, alto = 60.dp, separador = false, alTocar = alPalabras)
             }
             Grupo("O que lo haga la app", pie = if (avance == null) "Escucha la canción en el teléfono, sin conexión. Después repásala en «Revisar»." else null) {
@@ -826,16 +884,25 @@ class LetraSyncActivity : ComponentActivity() {
     @Composable
     private fun PadDeToques(
         porLineas: SincronizadorDeLetra?, porPalabras: SincronizadorPorPalabras?, letra: LetraDeCancion.Letra, cambio: Int,
-        alTocar: () -> Unit, alAtras: () -> Unit
+        alTerminar: Boolean, alModo: (Boolean) -> Unit, alTocar: () -> Unit, alAtras: () -> Unit
     ) {
         @Suppress("UNUSED_EXPRESSION") cambio
         val acento = MaterialTheme.colorScheme.primary
         val (hechas, total) = porLineas?.let { it.siguiente to it.textos.size } ?: porPalabras!!.let { it.siguiente to it.orden.size }
         val anterior: String; val actual: AnnotatedString; val siguiente: String
+        val porFinal = porLineas != null && alTerminar
+        // Al terminar: la grande es la que suena (la anterior a la que toca marcar); al empezar, la que va a empezar.
+        val k = if (porFinal && porLineas!!.siguiente > 0) porLineas.siguiente - 1 else porLineas?.siguiente ?: 0
+        val instruccion = when {
+            porPalabras != null -> "Toca al empezar cada palabra"
+            !porFinal -> "Toca al empezar cada frase"
+            porLineas!!.siguiente == 0 -> "Toca cuando empiece a cantar"
+            else -> "Toca cuando termine esta frase"
+        }
         if (porLineas != null) {
-            anterior = porLineas.textos.getOrNull(porLineas.siguiente - 1).orEmpty()
-            actual = AnnotatedString(porLineas.textos.getOrNull(porLineas.siguiente) ?: "¡Listo!")
-            siguiente = porLineas.textos.getOrNull(porLineas.siguiente + 1).orEmpty()
+            anterior = porLineas.textos.getOrNull(k - 1).orEmpty()
+            actual = AnnotatedString(porLineas.textos.getOrNull(k) ?: "¡Listo!")
+            siguiente = porLineas.textos.getOrNull(k + 1).orEmpty()
         } else {
             val (li, pi) = porPalabras!!.actual ?: (letra.lineas.lastIndex to Int.MAX_VALUE)
             val l = letra.lineas.getOrNull(li)
@@ -859,6 +926,9 @@ class LetraSyncActivity : ComponentActivity() {
                 progress = { if (total == 0) 0f else hechas.toFloat() / total },
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).height(3.dp).clip(RoundedCornerShape(2.dp)), trackColor = relleno()
             )
+            if (porLineas != null && hechas == 0) Segmentado(
+                listOf("Toco al terminar", "Toco al empezar"), if (alTerminar) 0 else 1, alto = 34.dp, modifier = Modifier.padding(top = 4.dp)
+            ) { alModo(it == 0) }
             Column(Modifier.weight(1f).fillMaxWidth().clickable(interactionSource = fuente, indication = null, onClick = alTocar), verticalArrangement = Arrangement.Center) {
                 Text(anterior, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f), maxLines = 2, letterSpacing = (-0.4).sp)
                 Spacer(Modifier.height(16.dp))
@@ -882,7 +952,7 @@ class LetraSyncActivity : ComponentActivity() {
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Toca", color = Color.White, fontSize = (30 * escala).sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
-                    Text(if (porPalabras != null) "al empezar cada palabra" else "al empezar cada línea", color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp)
+                    Text(instruccion.removePrefix("Toca ").replaceFirstChar { it }, color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp)
                 }
             }
             BotonIos("Atrás", Modifier.fillMaxWidth().padding(vertical = 8.dp), Estilo.GRIS, Icons.AutoMirrored.Filled.Undo, activo = hechas > 0, alto = 46.dp, alTocar = alAtras)
@@ -926,37 +996,27 @@ class LetraSyncActivity : ComponentActivity() {
         }
     }
 
-    /** Afinar la línea elegida: una tarjeta abajo con su tiempo grande, −0.1 / +0.1 y Oír · Aquí · Bucle. */
+    /**
+     * Afinar la línea elegida, en poco sitio (7-nov-2026: «el botón de en medio llena mucho»): su tiempo entre
+     * − y + (mantener repite) y debajo «Oír» y «Aquí». Se cierra tocando la línea otra vez o la ✕.
+     */
     @Composable
-    private fun AfinarLinea(
-        linea: LetraDeCancion.Linea, numero: Int, total: Int, enBucle: Boolean, fuera: Boolean,
-        alMover: (Int) -> Unit, alAqui: () -> Unit, alOir: () -> Unit, alBucle: () -> Unit,
-        alAnterior: () -> Unit, alSiguiente: () -> Unit, alCerrar: () -> Unit
-    ) {
-        Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Box(Modifier.align(Alignment.CenterHorizontally).size(width = 36.dp, height = 5.dp).clip(RoundedCornerShape(3.dp)).background(relleno()))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Línea $numero de $total", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                    BotonDeBarra("Listo", principal = true, alTocar = alCerrar)
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    BotonDeBarra("", icono = Icons.Filled.ChevronLeft, activo = numero > 1, alTocar = alAnterior)
+    private fun AfinarLinea(linea: LetraDeCancion.Linea, fuera: Boolean, alMover: (Int) -> Unit, alAqui: () -> Unit, alOir: () -> Unit, alCerrar: () -> Unit) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp)) {
+                val con = linea.ms != null
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BotonRepetible("−", con, Modifier.width(64.dp)) { alMover(-100) }
                     Text(
-                        linea.ms?.let { EdicionDeLetra.conDecimas(it) } ?: "—", fontSize = 36.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
+                        linea.ms?.let { EdicionDeLetra.conDecimas(it) } ?: "—", fontSize = 28.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
                         color = if (fuera) Tema.ROJO else Tema.NARANJA, textAlign = TextAlign.Center, modifier = Modifier.weight(1f)
                     )
-                    BotonDeBarra("", icono = Icons.Filled.ChevronRight, activo = numero < total, alTocar = alSiguiente)
+                    BotonRepetible("+", con, Modifier.width(64.dp)) { alMover(100) }
+                    BotonDeBarra("", icono = Icons.Filled.Close, alTocar = alCerrar)
                 }
-                val con = linea.ms != null
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    BotonRepetible("− 0,1 s", con, Modifier.weight(1f)) { alMover(-100) }
-                    BotonRepetible("+ 0,1 s", con, Modifier.weight(1f)) { alMover(100) }
-                }
-                Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    BotonIos("Oír", Modifier.weight(1f), Estilo.TINTADO, Icons.Filled.Headphones, activo = con, alTocar = alOir)
-                    BotonIos("Aquí", Modifier.weight(1.2f), Estilo.LLENO, Icons.Filled.TouchApp, alTocar = alAqui)
-                    BotonIos("", Modifier.weight(0.7f), if (enBucle) Estilo.LLENO else Estilo.GRIS, Icons.Filled.Repeat, activo = con, color = Tema.NARANJA, alTocar = alBucle)
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BotonIos("Oír", Modifier.weight(1f), Estilo.TINTADO, Icons.Filled.Headphones, activo = con, alto = 46.dp, alTocar = alOir)
+                    BotonIos("Aquí", Modifier.weight(1f), Estilo.LLENO, Icons.Filled.TouchApp, alto = 46.dp, alTocar = alAqui)
                 }
             }
         }

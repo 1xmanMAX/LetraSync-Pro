@@ -65,7 +65,29 @@ object SepararVoz {
         return p.takeIf { it.voz.length() > 44 && it.karaoke.length() > 44 }
     }
 
-    fun borrar(c: Context, audio: Uri) { carpeta(c, audio).deleteRecursively() }
+    fun borrar(c: Context, audio: Uri) {
+        val d = carpeta(c, audio)
+        File(d, "voz.wav").delete(); File(d, "karaoke.wav").delete()
+    }
+
+    /** La canción ya decodificada a WAV (44,1 kHz estéreo), si está. */
+    fun cancionWav(c: Context, audio: Uri): File? = File(carpeta(c, audio), "cancion.wav").takeIf { it.length() > 44 }
+
+    /**
+     * **La canción de trabajo** (7-nov-2026): la canción decodificada una vez a WAV. Con ella el reproductor va
+     * al milisegundo exacto (con un MP3, Android calcula la posición a ojo y la onda y lo que suena se
+     * desfasaban: las marcas «no quedaban donde las puse») y la onda, el raspado y el separador leen lo mismo.
+     */
+    fun prepararCancion(c: Context, audio: Uri): File? {
+        cancionWav(c, audio)?.let { return it }
+        val d = carpeta(c, audio).apply { mkdirs() }
+        val parte = File(d, "cancion.wav.parte")
+        return runCatching {
+            val n = decodificarEstereo(c, audio, parte, 44_100, cabecera = true)
+            if (n <= 0) error("vacía")
+            File(d, "cancion.wav").also { if (!parte.renameTo(it)) error("no se pudo dejar") }
+        }.onFailure { parte.delete() }.getOrNull()
+    }
 
     /** Baja el modelo (una vez). [avance] de 0 a 1. */
     fun bajarModelo(c: Context, avance: (Float) -> Unit, cancelado: AtomicBoolean): Boolean {
@@ -97,9 +119,9 @@ object SepararVoz {
     fun separar(c: Context, audio: Uri, fino: Boolean, avance: (Float) -> Unit, cancelado: AtomicBoolean): Resultado {
         if (!modeloListo(c)) return Resultado.SinModelo
         val d = carpeta(c, audio).apply { mkdirs() }
-        val pcm = File(c.cacheDir, "separar.pcm")
         try {
-            val n = runCatching { decodificarEstereo(c, audio, pcm, 44_100) }.getOrElse { return Resultado.Fallo("no se pudo leer la canción") }
+            val pcm = prepararCancion(c, audio) ?: return Resultado.Fallo("no se pudo leer la canción")
+            val n = ((pcm.length() - 44) / 4).toInt()
             if (n <= 0) return Resultado.Fallo("la canción está vacía")
             avance(0.05f)
             Separador.abrir(modelo(c), Runtime.getRuntime().availableProcessors().coerceIn(2, 4)).use { m ->
@@ -115,7 +137,7 @@ object SepararVoz {
                                 c0.fill(0f); c1.fill(0f)
                                 val a = desde.coerceAtLeast(0); val b = (desde + sep.tramo).coerceAtMost(n)
                                 if (b > a) {
-                                    raf.seek(a * 4L); raf.readFully(bytes, 0, (b - a) * 4)
+                                    raf.seek(44 + a * 4L); raf.readFully(bytes, 0, (b - a) * 4)
                                     for (k in 0 until b - a) { c0[a - desde + k] = bb.getShort(k * 4) / 32768f; c1[a - desde + k] = bb.getShort(k * 4 + 2) / 32768f }
                                 }
                             },
@@ -132,14 +154,14 @@ object SepararVoz {
         } catch (e: Throwable) {
             android.util.Log.e("LetraSyncSeparar", "separar", e)
             return Resultado.Fallo((e::class.java.simpleName + ": " + (e.message ?: "")).take(140))
-        } finally { pcm.delete() }
+        }
     }
 
     /**
      * La canción a PCM de 16 bits **estéreo** a [hercios] (intercalado, sin cabecera) en [salida]. Mono: el mismo en
      * los dos; más de dos canales: los dos primeros. Devuelve las muestras por canal.
      */
-    fun decodificarEstereo(c: Context, audio: Uri, salida: File, hercios: Int): Int {
+    fun decodificarEstereo(c: Context, audio: Uri, salida: File, hercios: Int, cabecera: Boolean = false): Int {
         val ex = MediaExtractor()
         ex.setDataSource(c, audio, null)
         val pista = (0 until ex.trackCount).firstOrNull { ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
@@ -156,6 +178,7 @@ object SepararVoz {
         // Remuestreo lineal: [pos] es dónde cae la siguiente salida entre la muestra anterior (0) y la actual (1).
         var pos = 0.0; var prevL = 0f; var prevR = 0f; var hayPrev = false
         val out = BufferedOutputStream(salida.outputStream(), 1 shl 16)
+        if (cabecera) out.write(ByteArray(44))
         val par = ByteArray(4)
         fun poner(l: Float, r: Float) {
             val a = (l * 32767f).toInt().coerceIn(-32768, 32767); val b = (r * 32767f).toInt().coerceIn(-32768, 32767)
@@ -200,7 +223,9 @@ object SepararVoz {
             }
             if (hayPrev) poner(prevL, prevR)
         } finally {
-            out.close(); runCatching { codec.stop() }; runCatching { codec.release() }; runCatching { ex.release() }
+            out.close()
+            if (cabecera) RandomAccessFile(salida, "rw").use { it.seek(0); it.write(Wav.cabecera(escritas * 4L, hercios)) }
+            runCatching { codec.stop() }; runCatching { codec.release() }; runCatching { ex.release() }
         }
         return escritas
     }

@@ -21,6 +21,9 @@ class Preferencias(val idioma: String, val segundoIdioma: String, val modelo: St
         fun anticipo(c: Context): Int = prefs(c).getInt("anticipo", ANTICIPO_POR_DEFECTO)
         fun ponerAnticipo(c: Context, ms: Int) = prefs(c).edit().putInt("anticipo", ms).apply()
         const val ANTICIPO_POR_DEFECTO = 300
+        /** A toques: tocar al terminar cada frase (por defecto) o al empezar. */
+        fun alTerminar(c: Context): Boolean = prefs(c).getBoolean("alTerminar", true)
+        fun ponerAlTerminar(c: Context, si: Boolean) = prefs(c).edit().putBoolean("alTerminar", si).apply()
         /** Separar voz y música en dos pasadas (más limpia, el doble de lenta). */
         fun separarFino(c: Context): Boolean = prefs(c).getBoolean("separarFino", false)
         fun ponerSepararFino(c: Context, si: Boolean) = prefs(c).edit().putBoolean("separarFino", si).apply()

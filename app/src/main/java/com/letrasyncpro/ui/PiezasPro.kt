@@ -76,7 +76,7 @@ private const val VENTANA_MS = 10_000
 fun VistaDeOnda(
     onda: FloatArray?, lineas: List<LetraDeCancion.Linea>, posicion: Int, duracion: Int, elegida: Int?,
     iman: Boolean, inicios: List<Int>, limites: (Int) -> IntRange, anticipo: Int = 0,
-    alIr: (Int) -> Unit, alMover: (Int, Int) -> Unit, alElegir: (Int) -> Unit,
+    alIr: (Int) -> Unit, alMover: (Int, Int) -> Unit, alElegir: (Int) -> Unit, alSoltar: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val primario = MaterialTheme.colorScheme.primary
@@ -128,13 +128,14 @@ fun VistaDeOnda(
                         else { arrastrada = -1; desde = pos }
                     },
                     onDragEnd = {
+                        alSoltar()
                         if (arrastrada >= 0) {
                             val fin = (if (imanAhora) Onda.pegar(msArrastre, ini) else msArrastre).coerceIn(limVoz(arrastrada))
                             alMover(arrastrada, fin)
                         }
                         arrastrada = -1; centroFijo = null
                     },
-                    onDragCancel = { arrastrada = -1; centroFijo = null },
+                    onDragCancel = { alSoltar(); arrastrada = -1; centroFijo = null },
                     onDrag = { cambio, d ->
                         cambio.consume()
                         dx += d.x
@@ -150,18 +151,15 @@ fun VistaDeOnda(
         val msPorPx = VENTANA_MS / w
         // La onda.
         if (onda != null) {
-            val paso = 3f
-            var x = 0f
-            while (x < w) {
-                val t0 = inicio + x * msPorPx; val t1 = t0 + paso * msPorPx
-                val a = (t0 / Onda.MS_POR_PUNTO).toInt().coerceAtLeast(0); val b = (t1 / Onda.MS_POR_PUNTO).toInt().coerceAtMost(onda.size - 1)
-                var amp = 0f
-                for (k in a..b) if (k in onda.indices && onda[k] > amp) amp = onda[k]
-                if (t0 >= 0 && a < onda.size) {
-                    val alto = (amp * (h * 0.8f)).coerceAtLeast(1f)
-                    drawLine(if (t0 < pos) primario.copy(alpha = 0.75f) else tenue, Offset(x, h / 2 - alto / 2), Offset(x, h / 2 + alto / 2), strokeWidth = 2f)
-                }
-                x += paso
+            // Barras fijas al tiempo: al moverse la onda no cambian de alto (no tiembla).
+            val (msBarra, barras) = Onda.barras(onda, inicio.toFloat(), VENTANA_MS.toFloat(), w, 5f)
+            val anchoBarra = (msBarra / msPorPx * 0.6f).coerceAtLeast(1.5f)
+            for ((ms, amp) in barras) {
+                val alto = (amp * (h * 0.8f)).coerceAtLeast(1f)
+                drawRoundRect(
+                    if (ms < pos) primario.copy(alpha = 0.75f) else tenue, Offset(xDe(ms), h / 2 - alto / 2),
+                    androidx.compose.ui.geometry.Size(anchoBarra, alto), androidx.compose.ui.geometry.CornerRadius(anchoBarra / 2)
+                )
             }
         }
         // Las líneas.

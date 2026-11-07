@@ -73,6 +73,30 @@ object Onda {
         return r
     }
 
+    /**
+     * **Las barras de la onda, fijas al tiempo** (7-nov-2026: «las ondas vibran»): cada barra cubre siempre el mismo
+     * trozo de canción (`ms` múltiplo de su ancho), así al moverse la onda las barras se desplazan sin cambiar de
+     * alto. El ancho de barra (en ms) es una potencia de dos de [MS_POR_PUNTO] que da unos [pxPorBarra] píxeles,
+     * y solo cambia al acercar o alejar. Devuelve (ms de la barra, alto de 0 a 1) de las que se ven.
+     */
+    fun barras(e: FloatArray, inicioMs: Float, ventanaMs: Float, anchoPx: Float, pxPorBarra: Float = 7f): Pair<Int, List<Pair<Int, Float>>> {
+        val quiere = ventanaMs / anchoPx * pxPorBarra
+        var ancho = MS_POR_PUNTO
+        while (ancho * 2 <= quiere) ancho *= 2
+        val puntos = ancho / MS_POR_PUNTO
+        val primera = (maxOf(0f, inicioMs) / ancho).toInt()
+        val ultima = ((inicioMs + ventanaMs) / ancho).toInt() + 1
+        val r = ArrayList<Pair<Int, Float>>()
+        for (b in primera..ultima) {
+            val desde = b * puntos
+            if (desde >= e.size) break
+            var m = 0f
+            for (k in desde until minOf(e.size, desde + puntos)) if (e[k] > m) m = e[k]
+            r += (b * ancho) to m
+        }
+        return ancho to r
+    }
+
     /** Una envolvente más gruesa: el máximo de cada [n] puntos. */
     fun reducir(e: FloatArray, n: Int): FloatArray =
         if (n <= 1) e else FloatArray((e.size + n - 1) / n) { k -> var m = 0f; for (j in k * n until minOf(e.size, k * n + n)) if (e[j] > m) m = e[j]; m }
