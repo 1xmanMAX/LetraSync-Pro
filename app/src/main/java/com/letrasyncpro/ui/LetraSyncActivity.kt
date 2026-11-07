@@ -714,6 +714,7 @@ class LetraSyncActivity : ComponentActivity() {
                 if (!marcando) Reproductor(
                     sonando, posicion, duracion, velocidad, compacto = tocando,
                     alTocar = { tocar() }, alIr = { ir(it) }, alVelocidad = { cambiarVelocidad() },
+                    alRaspar = { raspar(it) }, alSoltar = { soltarRaspado() },
                     alVistaPrevia = if (letra.conTiempos && !tocando && !marcando) ({ vistaPrevia = true; sonar() }) else null
                 )
             }
@@ -1052,10 +1053,11 @@ class LetraSyncActivity : ComponentActivity() {
     @Composable
     private fun Reproductor(
         sonando: Boolean, posicion: Int, duracion: Int, velocidad: Float, compacto: Boolean,
-        alTocar: () -> Unit, alIr: (Int) -> Unit, alVelocidad: () -> Unit, alVistaPrevia: (() -> Unit)?
+        alTocar: () -> Unit, alIr: (Int) -> Unit, alVelocidad: () -> Unit, alVistaPrevia: (() -> Unit)?,
+        alRaspar: (Int) -> Unit = alIr, alSoltar: () -> Unit = {}
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = if (compacto) 2.dp else 6.dp)) {
-            BarraDeTiempo(posicion, duracion, alIr)
+            BarraDeTiempo(posicion, duracion, alRaspar, alSoltar = alSoltar)
             Row(Modifier.fillMaxWidth().height(if (compacto) 52.dp else 72.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Box(Modifier.size(width = 56.dp, height = 44.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = alVelocidad), contentAlignment = Alignment.Center) {
                     Text(if (velocidad == 1f) "1×" else "$velocidad×", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = if (velocidad != 1f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)

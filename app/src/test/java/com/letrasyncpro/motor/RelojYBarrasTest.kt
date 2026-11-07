@@ -30,6 +30,16 @@ class RelojYBarrasTest {
     }
 
     @Test
+    fun la_barra_se_arrastra_desde_donde_iba_como_en_tiktok() {
+        // Canción de 200 s en una barra de 1000 px, yendo por el 50 s: 100 px a la derecha son 20 s más.
+        assertEquals(70_000, com.letrasyncpro.ui.arrastreRelativo(50_000, 100f, 1_000f, 200_000))
+        assertEquals(30_000, com.letrasyncpro.ui.arrastreRelativo(50_000, -100f, 1_000f, 200_000))
+        // Nunca fuera de la canción.
+        assertEquals(200_000, com.letrasyncpro.ui.arrastreRelativo(190_000, 500f, 1_000f, 200_000))
+        assertEquals(0, com.letrasyncpro.ui.arrastreRelativo(5_000, -500f, 1_000f, 200_000))
+    }
+
+    @Test
     fun las_barras_cubren_siempre_el_mismo_trozo_al_moverse() {
         val e = FloatArray(4_000) { (it % 37) / 37f } // 20 s a 5 ms
         val (ancho, a) = Onda.barras(e, 1_000f, 4_000f, 1_000f)

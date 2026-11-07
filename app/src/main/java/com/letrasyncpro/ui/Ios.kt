@@ -199,26 +199,36 @@ fun Fila(
     }
 }
 
+/** Arrastrar como en TikTok: desde donde iba la canción, lo que se mueve el dedo (todo el ancho, toda la canción). */
+fun arrastreRelativo(desde: Int, dx: Float, ancho: Float, duracion: Int): Int =
+    if (ancho <= 0f) desde else (desde + dx / ancho * duracion).toInt().coerceIn(0, duracion.coerceAtLeast(0))
+
 /**
- * **La barra del tiempo de Apple Music**: fina, y se ensancha al cogerla. Se puede tocar o arrastrar en todo
- * su alto (44 dp), aunque se vea de 4.
+ * **La barra del tiempo** (7-nov-2026, «que se maneje con una mano, como TikTok»): se pone el dedo **en
+ * cualquier punto** de la barra y se arrastra; la canción se mueve **desde donde iba**, adelante o atrás, lo que
+ * se mueva el dedo. No hace falta llegar con el dedo al final: basta empujar. Un toque suelto no salta (así no
+ * se pierde el sitio sin querer). Mientras se arrastra, la barra engorda y sale el tiempo grande.
  */
 @Composable
-fun BarraDeTiempo(posicion: Int, duracion: Int, alIr: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun BarraDeTiempo(posicion: Int, duracion: Int, alIr: (Int) -> Unit, modifier: Modifier = Modifier, alSoltar: () -> Unit = {}) {
     var cogida by remember { mutableStateOf(false) }
-    val grosor by animateDpAsState(if (cogida) 10.dp else 5.dp, label = "grosor")
+    val grosor by animateDpAsState(if (cogida) 12.dp else 5.dp, label = "grosor")
     val dur by rememberUpdatedState(duracion)
+    val pos by rememberUpdatedState(posicion)
     val ir by rememberUpdatedState(alIr)
+    val soltar by rememberUpdatedState(alSoltar)
     val lleno = MaterialTheme.colorScheme.onSurface.copy(alpha = if (cogida) 0.95f else 0.75f)
     val pista = relleno()
     Column(modifier.fillMaxWidth()) {
         Canvas(
-            Modifier.fillMaxWidth().height(32.dp)
-                .pointerInput(Unit) { detectTapGestures { o -> ir((o.x / size.width * dur).toInt()) } }
+            Modifier.fillMaxWidth().height(44.dp)
                 .pointerInput(Unit) {
+                    var desde = 0
+                    var dx = 0f
                     detectHorizontalDragGestures(
-                        onDragStart = { cogida = true }, onDragEnd = { cogida = false }, onDragCancel = { cogida = false },
-                        onHorizontalDrag = { c, _ -> c.consume(); ir((c.position.x / size.width).coerceIn(0f, 1f).let { (it * dur).toInt() }) }
+                        onDragStart = { cogida = true; desde = pos; dx = 0f },
+                        onDragEnd = { cogida = false; soltar() }, onDragCancel = { cogida = false; soltar() },
+                        onHorizontalDrag = { c, d -> c.consume(); dx += d; ir(arrastreRelativo(desde, dx, size.width.toFloat(), dur)) }
                     )
                 }
         ) {
@@ -227,8 +237,10 @@ fun BarraDeTiempo(posicion: Int, duracion: Int, alIr: (Int) -> Unit, modifier: M
             drawRoundRect(pista, Offset(0f, y), Size(size.width, g), CornerRadius(g / 2))
             drawRoundRect(lleno, Offset(0f, y), Size(size.width * f, g), CornerRadius(g / 2))
         }
-        Row(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(LetraSyncActivity.tiempo(posicion), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.weight(1f))
+            if (cogida) Text(LetraSyncActivity.tiempo(posicion) + " / " + LetraSyncActivity.tiempo(duracion), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.weight(1f))
             Text("−" + LetraSyncActivity.tiempo((duracion - posicion).coerceAtLeast(0)), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
         }
