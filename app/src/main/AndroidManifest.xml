@@ -3,6 +3,10 @@
 
     <!-- Bajar el reconocedor de voz la primera vez (unos 160 MB); lo demás va sin conexión. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Seguir sonando con la app de fondo, con los mandos del sistema (notificación y pantalla de bloqueo). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -14,6 +18,7 @@
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <!-- La sincronización automática, en su propio proceso: si el reconocedor se cae, la app sigue. -->
+        <service android:name=".ServicioDeMusica" android:exported="false" android:foregroundServiceType="mediaPlayback" />
         <service android:name=".ServicioAutomatico" android:process=":reconocedor" android:exported="false" />
 
         <activity

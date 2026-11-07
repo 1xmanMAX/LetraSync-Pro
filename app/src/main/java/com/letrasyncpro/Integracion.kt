@@ -16,4 +16,9 @@ object Integracion {
     const val EXTRA_LRC = "com.letrasyncpro.extra.LRC"
     const val EXTRA_TITULO = "com.letrasyncpro.extra.TITULO"
     const val EXTRA_QUIEN_LLAMA = "com.letrasyncpro.extra.CALLER_LABEL"
+    /** El id de la canción en la app que llama: se guarda en la biblioteca para mandarle luego la letra retocada. */
+    const val EXTRA_ID = "com.letrasyncpro.extra.ID"
+    /** PinDesk: a quién y con qué se le manda la letra retocada desde la biblioteca. */
+    const val PAQUETE_PINDESK = "com.forge.pixpin"
+    const val ACCION_DEVUELTA = "com.forge.pixpin.action.LETRA_SINCRONIZADA"
 }

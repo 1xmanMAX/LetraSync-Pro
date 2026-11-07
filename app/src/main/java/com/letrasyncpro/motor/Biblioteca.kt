@@ -9,7 +9,14 @@ import java.io.File
  */
 class Biblioteca(private val carpeta: File) {
 
-    data class Cancion(val id: String, val audio: String, val nombre: String, val letra: String, val cuando: Long) {
+    /**
+     * [origen]: de qué app vino («PinDesk») y [idExterno] su id allí: al retocarla aquí, la letra se le manda de vuelta
+     * (`Integracion.ACCION_DEVUELTA`).
+     */
+    data class Cancion(
+        val id: String, val audio: String, val nombre: String, val letra: String, val cuando: Long,
+        val origen: String? = null, val idExterno: String? = null
+    ) {
         val lineas: Int get() = LetraDeCancion.leer(letra).lineas.size
         val conTiempos: Boolean get() = LetraDeCancion.leer(letra).conTiempos
     }
@@ -19,9 +26,11 @@ class Biblioteca(private val carpeta: File) {
         (carpeta.listFiles { f -> f.name.endsWith(EXT) } ?: emptyArray()).mapNotNull { leer(it) }.sortedByDescending { it.cuando }
 
     /** Guarda (o pone al día) la canción de [audio]: el mismo audio es la misma canción. Deja solo las [MAXIMO] últimas. */
-    fun guardar(audio: String, nombre: String, letra: String, cuando: Long = System.currentTimeMillis()): Cancion {
+    fun guardar(audio: String, nombre: String, letra: String, cuando: Long = System.currentTimeMillis(), origen: String? = null, idExterno: String? = null): Cancion {
         carpeta.mkdirs()
-        val c = Cancion(idDe(audio), audio, nombre, letra, cuando)
+        // Lo que ya se sabía de dónde vino no se pierde al guardar sin decirlo.
+        val antes = de(audio)
+        val c = Cancion(idDe(audio), audio, nombre, letra, cuando, origen ?: antes?.origen, idExterno ?: antes?.idExterno)
         File(carpeta, c.id + EXT).writeText(escribir(c))
         todas().drop(MAXIMO).forEach { borrar(it.id) }
         return c
@@ -44,6 +53,8 @@ class Biblioteca(private val carpeta: File) {
             append("#audio: ").append(c.audio.replace("\n", " ")).append('\n')
             append("#nombre: ").append(c.nombre.replace("\n", " ")).append('\n')
             append("#cuando: ").append(c.cuando).append('\n')
+            c.origen?.let { append("#origen: ").append(it.replace("\n", " ")).append('\n') }
+            c.idExterno?.let { append("#id: ").append(it.replace("\n", " ")).append('\n') }
             append('\n').append(c.letra)
         }
 
@@ -58,7 +69,7 @@ class Biblioteca(private val carpeta: File) {
             }
             if (i < lineas.size && lineas[i].isEmpty()) i++
             val audio = cab["audio"]?.takeIf { it.isNotBlank() } ?: return null
-            return Cancion(id, audio, cab["nombre"].orEmpty(), lineas.drop(i).joinToString("\n"), cab["cuando"]?.toLongOrNull() ?: 0L)
+            return Cancion(id, audio, cab["nombre"].orEmpty(), lineas.drop(i).joinToString("\n"), cab["cuando"]?.toLongOrNull() ?: 0L, cab["origen"], cab["id"])
         }
     }
 }

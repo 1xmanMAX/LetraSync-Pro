@@ -94,6 +94,15 @@ class EdicionDeLetraTest {
     }
 
     @Test
+    fun la_de_pindesk_recuerda_de_donde_vino_aunque_se_guarde_otra_vez() {
+        val b = Biblioteca(tmp.newFolder())
+        b.guardar("file:///c.wav", "Madaker", "a", cuando = 1, origen = "PinDesk", idExterno = "v-42")
+        b.guardar("file:///c.wav", "Madaker", "[00:01.00]a", cuando = 2)
+        val c = b.de("file:///c.wav")!!
+        assertEquals("PinDesk", c.origen); assertEquals("v-42", c.idExterno); assertEquals("[00:01.00]a", c.letra)
+    }
+
+    @Test
     fun una_cancion_se_escribe_y_se_lee_igual() {
         val c = Biblioteca.Cancion("x", "content://a", "N", "#no es cabecera\n[00:01.00]a", 5)
         assertEquals(c, Biblioteca.leer("x", Biblioteca.escribir(c)))

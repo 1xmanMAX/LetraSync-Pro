@@ -13,8 +13,8 @@ android {
         targetSdk = 36
         // El reconocedor (sherpa-onnx) solo trae su biblioteca de 64 bits.
         ndk { abiFilters += listOf("arm64-v8a") }
-        versionCode = 8
-        versionName = "0.8.0"
+        versionCode = 9
+        versionName = "0.9.0"
     }
 
     buildTypes {

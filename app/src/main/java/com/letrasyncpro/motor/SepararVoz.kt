@@ -80,6 +80,8 @@ object SepararVoz {
      */
     fun prepararCancion(c: Context, audio: Uri): File? {
         cancionWav(c, audio)?.let { return it }
+        // Ya es una canción de trabajo (una de PinDesk guardada en la biblioteca): esa misma.
+        if (audio.scheme == "file") audio.path?.let { File(it) }?.takeIf { it.name == "cancion.wav" && it.length() > 44 }?.let { return it }
         val d = carpeta(c, audio).apply { mkdirs() }
         val parte = File(d, "cancion.wav.parte")
         return runCatching {

@@ -133,6 +133,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.letrasyncpro.Integracion
 import com.letrasyncpro.Automatica
+import com.letrasyncpro.Mandos
 import com.letrasyncpro.motor.AlinearLetra
 import com.letrasyncpro.motor.Biblioteca
 import com.letrasyncpro.motor.EdicionDeLetra
@@ -193,22 +194,21 @@ class LetraSyncActivity : ComponentActivity() {
         val letraInicial = intent?.getStringExtra(Integracion.EXTRA_LETRA).orEmpty()
         val titulo = intent?.getStringExtra(Integracion.EXTRA_TITULO)
         val quien = intent?.getStringExtra(Integracion.EXTRA_QUIEN_LLAMA) ?: "PinDesk"
+        val idExterno = if (desdePinDesk) intent?.getStringExtra(Integracion.EXTRA_ID) else null
         setContent {
             TemaLetraSync {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Pantalla(audioInicial, letraInicial, titulo, if (desdePinDesk) quien else null)
+                    Pantalla(audioInicial, letraInicial, titulo, if (desdePinDesk) quien else null, idExterno)
                 }
             }
         }
     }
 
-    override fun onStop() {
-        super.onStop()
-        reproductor?.takeIf { it.isPlaying }?.pause()
-    }
+    // Ya no se pausa al salir (7-nov-2026): la música sigue de fondo, con sus mandos en la notificación ([Mandos]).
 
     override fun onDestroy() {
         cancelar.set(true)
+        Mandos.quitar()
         reproductor?.release(); reproductor = null
         super.onDestroy()
     }
@@ -241,7 +241,7 @@ class LetraSyncActivity : ComponentActivity() {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Pantalla(audioInicial: Uri?, letraInicial: String, tituloInicial: String?, quienLlama: String?) {
+    private fun Pantalla(audioInicial: Uri?, letraInicial: String, tituloInicial: String?, quienLlama: String?, idDePinDesk: String?) {
         val contexto = LocalContext.current
         val alcance = rememberCoroutineScope()
         val vibrar = LocalHapticFeedback.current
@@ -251,6 +251,13 @@ class LetraSyncActivity : ComponentActivity() {
         var paso by rememberSaveable { mutableStateOf(pasoPara(letraInicial)) }
         var verBiblioteca by rememberSaveable { mutableStateOf(audioInicial == null && quienLlama == null) }
         var marcando by rememberSaveable { mutableStateOf(false) }
+        // De qué canción de PinDesk es esta (su id allí), venga de PinDesk ahora o de la biblioteca.
+        var idExterno by rememberSaveable { mutableStateOf(idDePinDesk) }
+        // Reproducir la biblioteca como un reproductor: la lista, y si al cargar se arranca sola.
+        var lista by remember { mutableStateOf<List<Biblioteca.Cancion>>(emptyList()) }
+        var sonarAlCargar by remember { mutableStateOf(false) }
+        var terminadas by remember { mutableIntStateOf(0) }
+        var saltos by remember { mutableIntStateOf(0) }
         var sonando by remember { mutableStateOf(false) }
         var posicion by remember { mutableIntStateOf(0) }
         var duracion by remember { mutableIntStateOf(0) }
@@ -340,11 +347,11 @@ class LetraSyncActivity : ComponentActivity() {
             val u = origen ?: run { posicion = 0; duracion = 0; return@LaunchedEffect }
             reproductor = withContext(Dispatchers.IO) {
                 runCatching { MediaPlayer().apply { setDataSource(contexto, u); prepare() } }.getOrNull()
-            }?.apply { setOnCompletionListener { sonando = false } }
+            }?.apply { setOnCompletionListener { sonando = false; terminadas++ } }
             duracion = reproductor?.duration ?: 0
             if (reproductor == null) { Toast.makeText(contexto, "No se puede reproducir esta canción", Toast.LENGTH_SHORT).show(); return@LaunchedEffect }
             if (era > 0) { reproductor?.seekTo(era.coerceAtMost(duracion).toLong(), MediaPlayer.SEEK_CLOSEST); posicion = era.coerceAtMost(duracion) }
-            if (sonaba) { reproductor?.start(); runCatching { reproductor?.playbackParams = reproductor!!.playbackParams.setSpeed(velocidad) }; sonando = true }
+            if (sonaba || sonarAlCargar) { sonarAlCargar = false; reproductor?.start(); runCatching { reproductor?.playbackParams = reproductor!!.playbackParams.setSpeed(velocidad) }; sonando = true }
         }
         // La onda: de la voz sola si está separada (así se ve dónde empieza a cantar), si no de la canción.
         LaunchedEffect(audio, pistas) {
@@ -374,13 +381,40 @@ class LetraSyncActivity : ComponentActivity() {
             }
             posicion = reproductor?.currentPosition ?: posicion
         }
-        // La biblioteca se pone al día sola (no con lo que llega de PinDesk: su audio es prestado).
-        LaunchedEffect(texto, audio, nombre) {
+        // **La biblioteca se pone al día sola** (7-nov-2026, también lo que llega de PinDesk, como el escáner): la de
+        // PinDesk se guarda con su canción de trabajo (el audio prestado se va) y su id; retocada aquí luego, la letra
+        // se le manda de vuelta sola ([Integracion.ACCION_DEVUELTA]).
+        var mandadaAPinDesk by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(texto, audio, nombre, cancionWav) {
             val u = audio ?: return@LaunchedEffect
-            if (quienLlama != null || texto.isBlank()) return@LaunchedEffect
-            delay(700)
-            withContext(Dispatchers.IO) { runCatching { biblioteca.guardar(u.toString(), nombre, texto) } }
+            if (texto.isBlank()) return@LaunchedEffect
+            delay(1_200)
+            val clave = if (quienLlama != null) cancionWav?.let { Uri.fromFile(it).toString() } ?: return@LaunchedEffect else u.toString()
+            val id = idExterno
+            withContext(Dispatchers.IO) { runCatching { biblioteca.guardar(clave, nombre, texto, origen = if (id != null) "PinDesk" else null, idExterno = id) } }
+            if (id != null && quienLlama == null && texto != mandadaAPinDesk && letra.lineas.isNotEmpty()) {
+                mandadaAPinDesk = texto
+                runCatching {
+                    contexto.sendBroadcast(Intent(Integracion.ACCION_DEVUELTA).setPackage(Integracion.PAQUETE_PINDESK)
+                        .putExtra(Integracion.EXTRA_ID, id).putExtra(Integracion.EXTRA_LETRA, LetraDeCancion.aGuardar(letra)))
+                }
+            }
         }
+
+        /** Abre una canción de la biblioteca; [sonar]: y que suene (como en un reproductor). */
+        fun abrirCancion(c: Biblioteca.Cancion, sonar: Boolean) {
+            if (!sonar) lista = emptyList()
+            audio = Uri.parse(c.audio); nombre = c.nombre; texto = c.letra; paso = pasoPara(c.letra)
+            idExterno = c.idExterno; mandadaAPinDesk = c.letra
+            verBiblioteca = false; confianzas = null; elegida = null; marcando = false
+            sonarAlCargar = sonar
+        }
+        fun otraDeLaLista(paso: Int) {
+            val i = lista.indexOfFirst { it.audio == audio.toString() }
+            lista.getOrNull(i + paso)?.let { abrirCancion(it, true) }
+        }
+        // Acabó una canción de la lista: la siguiente.
+        LaunchedEffect(terminadas) { if (terminadas > 0 && lista.isNotEmpty()) otraDeLaLista(1) }
 
         fun tocar() {
             val r = reproductor ?: return
@@ -393,6 +427,7 @@ class LetraSyncActivity : ComponentActivity() {
         }
         fun sonar() { if (reproductor?.isPlaying != true) tocar() }
         fun ir(ms: Int) {
+            saltos++
             val m = ms.coerceIn(0, duracion.coerceAtLeast(0))
             reproductor?.seekTo(m.toLong(), MediaPlayer.SEEK_CLOSEST); posicion = m
             reloj.reiniciar(m)
@@ -400,6 +435,19 @@ class LetraSyncActivity : ComponentActivity() {
         /** Arrastrando la onda: se mueve y suena lo que hay bajo el dedo (si está parada). */
         fun raspar(ms: Int) { ir(ms); if (!sonando) raspador?.ir(posicion) }
         fun soltarRaspado() { raspador?.soltar() }
+        // Los mandos del sistema (notificación, pantalla de bloqueo, auriculares): lo que hacen y lo que se ve.
+        Mandos.alSonar = { sonar() }
+        Mandos.alPausar = { if (sonando) tocar() }
+        Mandos.alIr = { ir(it) }
+        Mandos.alSiguiente = { if (lista.isNotEmpty()) otraDeLaLista(1) else ir(posicion + 10_000) }
+        Mandos.alAnterior = { if (lista.isNotEmpty() && posicion < 3_000) otraDeLaLista(-1) else ir(if (lista.isNotEmpty()) 0 else posicion - 10_000) }
+        LaunchedEffect(sonando, origen, duracion, velocidad, nombre, saltos) {
+            if (audio == null || duracion <= 0) return@LaunchedEffect
+            Mandos.poner(contexto, Mandos.Estado(
+                nombre.substringBeforeLast('.').ifBlank { "Canción" }, if (idExterno != null) "LetraSync Pro · de PinDesk" else "LetraSync Pro",
+                sonando, posicion, duracion, velocidad, lista.isNotEmpty()
+            ))
+        }
         /** Oír un trozo: desde [desde] durante [durante] ms, y para. */
         fun oir(desde: Int, durante: Long = 2_600) {
             ir(desde); sonar()
@@ -621,10 +669,8 @@ class LetraSyncActivity : ComponentActivity() {
             if (verBiblioteca) {
                 Box(Modifier.weight(1f)) {
                     ListaDeLaBiblioteca(
-                        alAbrir = { c ->
-                            audio = Uri.parse(c.audio); nombre = c.nombre; texto = c.letra; paso = pasoPara(c.letra)
-                            verBiblioteca = false; confianzas = null; elegida = null
-                        },
+                        alAbrir = { c -> abrirCancion(c, false) },
+                        alReproducir = { c, todas -> lista = todas; abrirCancion(c, true) },
                         alNueva = { elegirAudio.launch(arrayOf("audio/*")) }
                     )
                 }
@@ -1167,7 +1213,7 @@ class LetraSyncActivity : ComponentActivity() {
 
     /** La biblioteca: título grande y la lista de canciones como Apple Music. */
     @Composable
-    private fun ListaDeLaBiblioteca(alAbrir: (Biblioteca.Cancion) -> Unit, alNueva: () -> Unit) {
+    private fun ListaDeLaBiblioteca(alAbrir: (Biblioteca.Cancion) -> Unit, alReproducir: (Biblioteca.Cancion, List<Biblioteca.Cancion>) -> Unit, alNueva: () -> Unit) {
         var canciones by remember { mutableStateOf<List<Biblioteca.Cancion>?>(null) }
         var borrar by remember { mutableStateOf<Biblioteca.Cancion?>(null) }
         LaunchedEffect(Unit) { canciones = withContext(Dispatchers.IO) { biblioteca.todas() } }
@@ -1189,11 +1235,23 @@ class LetraSyncActivity : ComponentActivity() {
                         ) { Icon(Icons.Filled.MusicNote, null, tint = Color.White) }
                         Column(Modifier.weight(1f).padding(start = 14.dp)) {
                             Text(c.nombre.substringBeforeLast('.').ifBlank { "Canción" }, fontSize = 17.sp, letterSpacing = (-0.4).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                (if (c.conTiempos) "Sincronizada" else "Sin tiempos") + " · ${c.lineas} líneas · " + android.text.format.DateUtils.getRelativeTimeSpanString(c.cuando),
-                                fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Las de PinDesk, como las del escáner: se ve de dónde vinieron (y a dónde vuelve la letra).
+                                if (c.origen != null) Text(
+                                    c.origen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Tema.AZUL,
+                                    modifier = Modifier.padding(end = 6.dp).clip(RoundedCornerShape(5.dp)).background(Tema.AZUL.copy(alpha = 0.15f)).padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                                Text(
+                                    (if (c.conTiempos) "Sincronizada" else "Sin tiempos") + " · " + android.text.format.DateUtils.getRelativeTimeSpanString(c.cuando),
+                                    fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1
+                                )
+                            }
                         }
+                        // Reproducir desde aquí (y seguir con las de debajo), como un reproductor de música.
+                        Box(
+                            Modifier.size(44.dp).clip(RoundedCornerShape(22.dp)).background(relleno()).clickable { alReproducir(c, l.orEmpty().drop(k).plus(l.orEmpty().take(k))) },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Filled.PlayArrow, "Reproducir", modifier = Modifier.size(24.dp)) }
                     }
                     if (k < (l?.size ?: 0) - 1) HorizontalDivider(Modifier.padding(start = 86.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outline)
                 }
